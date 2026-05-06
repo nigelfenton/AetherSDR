@@ -17,6 +17,9 @@
 #include <QWebSocket>
 #include <QStringList>
 #include <QTimer>
+#include <QUdpSocket>
+#include <QNetworkDatagram>
+#include <QNetworkInterface>
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
@@ -210,7 +213,84 @@ bool TciServer::start(quint16 port)
 
     m_meterTimer->start();
     qCInfo(lcCat) << "TciServer: listening on port" << m_server->serverPort();
+
+    // ── LAN discovery responder ─────────────────────────────────────────
+    // Stand-alone controllers (e.g. aether_pad) broadcast "AETHERPAD?" on
+    // UDP kDiscoveryPort; we reply unicast with this host's IP and TCI port
+    // so they don't need to be configured manually.  Best-effort — if the
+    // bind fails (port busy, second AetherSDR instance), discovery just
+    // silently doesn't work and clients fall back to a configured IP.
+    m_discoverySocket = new QUdpSocket(this);
+    if (m_discoverySocket->bind(QHostAddress::AnyIPv4, kDiscoveryPort,
+                                QUdpSocket::ShareAddress)) {
+        connect(m_discoverySocket, &QUdpSocket::readyRead,
+                this, &TciServer::onDiscoveryDatagram);
+        qCInfo(lcCat) << "TciServer: discovery responder on UDP" << kDiscoveryPort;
+    } else {
+        qCWarning(lcCat) << "TciServer: discovery bind failed:"
+                         << m_discoverySocket->errorString();
+        m_discoverySocket->deleteLater();
+        m_discoverySocket = nullptr;
+    }
+
     return true;
+}
+
+// Picks a local IPv4 address that's on the same /24 as `peer`, falling back
+// to the first non-loopback IPv4 we can find.  Used so the discovery reply
+// advertises the correct interface when the host has multiple NICs.
+static QHostAddress pickLocalIpForPeer(const QHostAddress& peer)
+{
+    const auto peerArr = peer.toIPv4Address();
+    QHostAddress fallback;
+    const auto ifaces = QNetworkInterface::allInterfaces();
+    for (const auto& iface : ifaces) {
+        if (!(iface.flags() & QNetworkInterface::IsUp)) continue;
+        if (iface.flags() & QNetworkInterface::IsLoopBack) continue;
+        for (const auto& entry : iface.addressEntries()) {
+            const auto ip = entry.ip();
+            if (ip.protocol() != QAbstractSocket::IPv4Protocol) continue;
+            if (ip.isLoopback()) continue;
+            if (fallback.isNull()) fallback = ip;
+            // Same /24?
+            if ((ip.toIPv4Address() & 0xFFFFFF00u) ==
+                (peerArr & 0xFFFFFF00u)) {
+                return ip;
+            }
+        }
+    }
+    return fallback;   // may be null if host has no IPv4 — caller checks
+}
+
+void TciServer::onDiscoveryDatagram()
+{
+    if (!m_discoverySocket || !m_server) return;
+
+    while (m_discoverySocket->hasPendingDatagrams()) {
+        const QNetworkDatagram dg = m_discoverySocket->receiveDatagram();
+        const QByteArray& payload = dg.data();
+        if (!payload.startsWith("AETHERPAD?")) continue;
+
+        const QHostAddress local = pickLocalIpForPeer(dg.senderAddress());
+        if (local.isNull()) {
+            qCWarning(lcCat) << "TciServer: discovery — no usable local IPv4";
+            continue;
+        }
+
+        const QByteArray reply =
+            QStringLiteral("AETHERSDR ip=%1 tci=%2")
+                .arg(local.toString())
+                .arg(m_server->serverPort())
+                .toUtf8();
+
+        m_discoverySocket->writeDatagram(reply,
+                                         dg.senderAddress(),
+                                         dg.senderPort());
+        qCDebug(lcCat) << "TciServer: discovery reply →"
+                       << dg.senderAddress().toString()
+                       << ":" << dg.senderPort()
+                       << "(" << reply << ")";
+    }
 }
 
 void TciServer::stop()
@@ -230,6 +310,12 @@ void TciServer::stop()
     m_clients.clear();
     releaseDaxForTci();
     emit clientCountChanged(0);
+
+    if (m_discoverySocket) {
+        m_discoverySocket->close();
+        m_discoverySocket->deleteLater();
+        m_discoverySocket = nullptr;
+    }
 
     m_server->close();
     delete m_server;

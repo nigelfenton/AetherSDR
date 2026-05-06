@@ -13,6 +13,7 @@
 class QWebSocketServer;
 class QWebSocket;
 class QTimer;
+class QUdpSocket;
 
 namespace AetherSDR {
 
@@ -77,6 +78,10 @@ private slots:
     void onTextMessage(const QString& msg);
     void onBinaryMessage(const QByteArray& data);
     void broadcastStatus();
+    // Replies to LAN UDP probes "AETHERPAD?" on kDiscoveryPort with this
+    // server's TCI port — lets standalone controllers (aether_pad) auto-find
+    // AetherSDR without hardcoding the IP.
+    void onDiscoveryDatagram();
 
 private:
     void sendInitBurst(QWebSocket* client);
@@ -127,9 +132,12 @@ private:
     void ensureDaxForTci();
     void releaseDaxForTci();
 
+    static constexpr quint16 kDiscoveryPort = 40002;
+
     QPointer<RadioModel> m_model;  // QPointer auto-clears when RadioModel is destroyed (#2385)
     AudioEngine*      m_audio{nullptr};
     QWebSocketServer* m_server{nullptr};
+    QUdpSocket*       m_discoverySocket{nullptr};   // LAN UDP responder (40002)
     QList<ClientState> m_clients;
     QSet<int>         m_tciDaxSlices;   // slice IDs where we auto-assigned DAX (#1331)
     QMap<int, quint32> m_tciDaxStreamIds;      // DAX channel → stream ID created or borrowed by TCI

@@ -3,6 +3,23 @@
 All notable changes to AetherSDR are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### New features
+
+**TCI LAN discovery responder (nigelfenton)**
+- `TciServer` now binds an additional `QUdpSocket` on UDP port **40002**
+  alongside the WebSocket listener.  Standalone TCI controllers can
+  broadcast `AETHERPAD?` on the LAN; AetherSDR replies unicast with
+  `AETHERSDR ip=<addr> tci=<port>`, advertising the local IPv4 on the
+  same /24 as the requester (with first-non-loopback fallback for hosts
+  that don't share a subnet).
+- Lets the new aether_pad keypad/encoder controller (Arduino Giga R1)
+  auto-find AetherSDR without hardcoding the host IP.  Best-effort —
+  if the bind fails (port busy, second instance on the same machine)
+  the responder is silently disabled and clients fall back to a
+  configured IP.
+
 ## [v0.9.7] — 2026-05-05
 
 ### CW keying overhaul + reliability sweep
