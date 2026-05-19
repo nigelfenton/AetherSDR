@@ -14,12 +14,14 @@
 class QCheckBox;
 class QPlainTextEdit;
 class QPushButton;
+class QTableWidget;
 
 namespace AetherSDR {
 
 class RadioModel;
 class AudioEngine;
 class TimeSeriesGraphWidget;
+class TciServer;
 
 struct NetworkDiagnosticsSample {
     qint64 timestampMs{0};
@@ -72,6 +74,7 @@ public:
     explicit NetworkDiagnosticsDialog(RadioModel* model,
                                       AudioEngine* audio,
                                       NetworkDiagnosticsHistory* history,
+                                      TciServer* tci = nullptr,
                                       QWidget* parent = nullptr);
 
 private:
@@ -83,6 +86,8 @@ private:
     void refresh();
     void updateCharts();
     QWidget* buildLogsTab();
+    QWidget* buildTciTab();
+    void     refreshTciClientTable();
     void initializeLogTail();
     bool reopenLogFile(bool keepExistingLines);
     void appendNewLogData();
@@ -98,6 +103,9 @@ private:
     RadioModel* m_model;
     AudioEngine* m_audio;
     NetworkDiagnosticsHistory* m_history{nullptr};
+    TciServer*  m_tci{nullptr};
+    QTableWidget* m_tciClientTable{nullptr};
+    QLabel*       m_tciClientSummary{nullptr};
     QTimer      m_refreshTimer;
     QTimer      m_logRefreshTimer;
     QComboBox*  m_rangeCombo{nullptr};

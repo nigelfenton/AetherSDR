@@ -14,7 +14,6 @@ class QProgressBar;
 class QPushButton;
 class QComboBox;
 class QVBoxLayout;
-class QTableWidget;
 
 namespace AetherSDR {
 
@@ -25,7 +24,6 @@ class FirmwareStager;
 class TgxlConnection;
 class PgxlConnection;
 class AntennaGeniusModel;
-class TciServer;
 
 // Radio Setup dialog — tabbed configuration window matching SmartSDR's
 // Settings → Radio Setup. Shows radio info, GPS, TX, RX, filters, etc.
@@ -37,7 +35,6 @@ public:
                               TgxlConnection* tgxl = nullptr,
                               PgxlConnection* pgxl = nullptr,
                               AntennaGeniusModel* ag = nullptr,
-                              TciServer* tci = nullptr,
                               QWidget* parent = nullptr);
     void selectTab(const QString& tabName);
 
@@ -56,8 +53,6 @@ protected:
 private:
     QWidget* buildRadioTab();
     QWidget* buildNetworkTab();
-    QWidget* buildTciTab();
-    void     refreshTciClientTable();
     QGroupBox* buildIpConfigGroup();
     QWidget* buildGpsTab();
     QWidget* buildTxTab();
@@ -81,13 +76,7 @@ private:
     TgxlConnection*    m_tgxl{nullptr};
     PgxlConnection*    m_pgxl{nullptr};
     AntennaGeniusModel* m_ag{nullptr};
-    TciServer*         m_tci{nullptr};
     QTabWidget*  m_tabs{nullptr};
-
-    // TCI tab — live table of clients connected to this radio's TCI server.
-    // Built lazily; pointer stays null until the tab is first shown.
-    QTableWidget* m_tciClientTable{nullptr};
-    QLabel*       m_tciClientSummary{nullptr};
 
     // Radio tab fields
     QLabel* m_serialLabel{nullptr};

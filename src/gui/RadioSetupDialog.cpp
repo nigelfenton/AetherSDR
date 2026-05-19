@@ -17,7 +17,6 @@
 #include "core/FirmwareStager.h"
 #include "core/TgxlConnection.h"
 #include "core/PgxlConnection.h"
-#include "core/TciServer.h"   // self-guards on HAVE_WEBSOCKETS
 #include "models/AntennaGeniusModel.h"
 
 #include <QCloseEvent>
@@ -48,10 +47,6 @@
 #include <QProgressBar>
 #include <QProcess>
 #include <QListWidget>
-#include <QTableWidget>
-#include <QTableWidgetItem>
-#include <QHeaderView>
-#include <QAbstractItemView>
 #include <QStackedWidget>
 #include <QPlainTextEdit>
 #include <QSplitter>
@@ -168,12 +163,11 @@ static void refreshOscillatorSourceCombo(QComboBox* combo, const RadioModel* mod
 
 RadioSetupDialog::RadioSetupDialog(RadioModel* model, AudioEngine* audio,
                                    TgxlConnection* tgxl, PgxlConnection* pgxl,
-                                   AntennaGeniusModel* ag, TciServer* tci,
-                                   QWidget* parent)
+                                   AntennaGeniusModel* ag, QWidget* parent)
     : PersistentDialog(QStringLiteral("Radio Setup"),
                        QStringLiteral("RadioSetupDialogGeometry"), parent),
       m_model(model), m_audio(audio),
-      m_tgxl(tgxl), m_pgxl(pgxl), m_ag(ag), m_tci(tci)
+      m_tgxl(tgxl), m_pgxl(pgxl), m_ag(ag)
 {
     setMinimumSize(820, 620);
     setStyleSheet("QDialog { background: #0f0f1a; }");
@@ -200,11 +194,6 @@ RadioSetupDialog::RadioSetupDialog(RadioModel* model, AudioEngine* audio,
         m_deferredBuilders[idx] = std::move(builder);
     };
     addDeferred("Network",     [this] { return buildNetworkTab(); });
-#ifdef HAVE_WEBSOCKETS
-    // TCI client list — only when a TCI server instance is available.
-    if (m_tci)
-        addDeferred("TCI",     [this] { return buildTciTab(); });
-#endif
     addDeferred("GPS",         [this] { return buildGpsTab(); });
     addDeferred("Audio",       [this] { return buildAudioTab(); });
     addDeferred("TX",          [this] { return buildTxTab(); });
@@ -742,177 +731,6 @@ QWidget* RadioSetupDialog::buildNetworkTab()
     vbox->addStretch(1);
     return page;
 }
-
-#ifdef HAVE_WEBSOCKETS
-
-// TCI carries no client-identity handshake — a client is only ever known
-// by its endpoint plus the streams it subscribed to. Infer a friendly
-// hint from those subscriptions rather than claiming a real identity.
-static QString tciRoleHint(const TciClientInfo& c)
-{
-    if (c.audio) return QStringLiteral("Audio (WSJT-X / digital mode)");
-    if (c.iq)    return QStringLiteral("IQ stream (panadapter / SDR client)");
-    if (c.rxSensors || c.txSensors)
-                 return QStringLiteral("Telemetry / monitor");
-    return QStringLiteral("Control only");
-}
-
-QWidget* RadioSetupDialog::buildTciTab()
-{
-    auto* page = new QWidget;
-    auto* vbox = new QVBoxLayout(page);
-    vbox->setSpacing(8);
-
-    // Inner tab widget so the TCI tab can grow more sub-tabs later
-    // (Server / Log / …) without restructuring.
-    auto* inner = new QTabWidget;
-    inner->setStyleSheet(
-        "QTabWidget::pane { border: 1px solid #304050; background: #0f0f1a; }"
-        "QTabBar::tab { background: #1a2a3a; color: #8aa8c0; "
-        "border: 1px solid #304050; padding: 4px 12px; margin-right: 2px; }"
-        "QTabBar::tab:selected { background: #0f0f1a; color: #c8d8e8; "
-        "border-bottom-color: #0f0f1a; }");
-
-    auto* clients = new QWidget;
-    auto* cvb = new QVBoxLayout(clients);
-    cvb->setSpacing(6);
-
-    auto* intro = new QLabel(
-        "Applications currently connected to this radio's TCI server. "
-        "TCI has no client-identity handshake, so clients are listed by "
-        "network endpoint and the role is inferred from the streams each "
-        "client has subscribed to. You can type your own label in the "
-        "Name column — it is saved locally, keyed by IP address.");
-    intro->setWordWrap(true);
-    intro->setStyleSheet(kLabelStyle);
-    cvb->addWidget(intro);
-
-    m_tciClientSummary = new QLabel;
-    m_tciClientSummary->setStyleSheet(kValueStyle);
-    cvb->addWidget(m_tciClientSummary);
-
-    m_tciClientTable = new QTableWidget(0, 7);
-    m_tciClientTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Name"), QStringLiteral("Endpoint"),
-         QStringLiteral("Likely role"),
-         QStringLiteral("Audio"), QStringLiteral("IQ"),
-         QStringLiteral("RX sensors"), QStringLiteral("TX sensors")});
-    m_tciClientTable->verticalHeader()->setVisible(false);
-    // Only the Name column is editable (per-item flags are set in
-    // refreshTciClientTable); double-click or F2 to rename.
-    m_tciClientTable->setEditTriggers(QAbstractItemView::DoubleClicked |
-                                      QAbstractItemView::EditKeyPressed);
-    m_tciClientTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_tciClientTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    auto* hh = m_tciClientTable->horizontalHeader();
-    hh->setStretchLastSection(false);
-    hh->setSectionResizeMode(0, QHeaderView::Stretch);             // Name
-    hh->setSectionResizeMode(1, QHeaderView::ResizeToContents);    // Endpoint
-    hh->setSectionResizeMode(2, QHeaderView::Stretch);             // Likely role
-    for (int c = 3; c < 7; ++c)
-        hh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    m_tciClientTable->setStyleSheet(
-        "QTableWidget { background: #0f0f1a; color: #c8d8e8; "
-        "gridline-color: #304050; border: 1px solid #304050; "
-        "font-size: 12px; }"
-        "QTableWidget::item:selected { background: #1a3a52; }"
-        "QHeaderView::section { background: #1a2a3a; color: #8aa8c0; "
-        "border: 1px solid #304050; padding: 3px 6px; font-weight: bold; }");
-    cvb->addWidget(m_tciClientTable, 1);
-
-    // Persist a user-assigned alias when the Name cell is edited. Keyed by
-    // client IP (the port is per-connection and not stable). itemChanged
-    // also fires during programmatic repopulation — refreshTciClientTable
-    // blocks this signal while it runs, so anything arriving here is a
-    // genuine user edit.
-    connect(m_tciClientTable, &QTableWidget::itemChanged, this,
-            [](QTableWidgetItem* item) {
-        if (!item || item->column() != 0)
-            return;
-        const QString ip = item->data(Qt::UserRole).toString();
-        if (ip.isEmpty())
-            return;
-        AppSettings::instance().setValue(
-            QStringLiteral("TciClientAlias/") + ip, item->text().trimmed());
-        AppSettings::instance().save();
-    });
-
-    inner->addTab(clients, QStringLiteral("Clients"));
-    vbox->addWidget(inner, 1);
-
-    refreshTciClientTable();
-
-    // Live updates while the dialog is open. Both ends are QObjects, so Qt
-    // tears the connection down automatically if either is destroyed.
-    if (m_tci)
-        connect(m_tci, &TciServer::clientsChanged,
-                this, &RadioSetupDialog::refreshTciClientTable);
-
-    return page;
-}
-
-void RadioSetupDialog::refreshTciClientTable()
-{
-    if (!m_tci || !m_tciClientTable)
-        return;
-
-    const QVector<TciClientInfo> list = m_tci->connectedClients();
-
-    // Repopulating fires itemChanged for every setItem — suppress it so the
-    // alias-persist handler only ever sees real user edits.
-    QSignalBlocker block(m_tciClientTable);
-    m_tciClientTable->setRowCount(list.size());
-
-    auto readOnly = [](const QString& text, bool centre = false) {
-        auto* it = new QTableWidgetItem(text);
-        it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-        if (centre)
-            it->setTextAlignment(Qt::AlignCenter);
-        return it;
-    };
-
-    for (int r = 0; r < list.size(); ++r) {
-        const TciClientInfo& c = list[r];
-
-        // Name — editable; restore any saved alias; carry the IP in
-        // UserRole so the persist handler knows what to key on.
-        const QString alias = AppSettings::instance()
-            .value(QStringLiteral("TciClientAlias/") + c.peerAddress, QString())
-            .toString();
-        auto* nameItem = new QTableWidgetItem(alias);
-        nameItem->setData(Qt::UserRole, c.peerAddress);
-        nameItem->setFlags(nameItem->flags() | Qt::ItemIsEditable);
-        nameItem->setToolTip(QStringLiteral(
-            "Your own label for this client (saved locally, keyed by IP)"));
-        m_tciClientTable->setItem(r, 0, nameItem);
-
-        m_tciClientTable->setItem(r, 1, readOnly(
-            c.peerAddress + QStringLiteral(":") + QString::number(c.peerPort)));
-        m_tciClientTable->setItem(r, 2, readOnly(tciRoleHint(c)));
-        const QString audio = c.audio
-            ? (c.audioReceiver < 0
-                   ? QStringLiteral("Yes (all RX)")
-                   : QStringLiteral("Yes (RX %1)").arg(c.audioReceiver))
-            : QStringLiteral("—");
-        m_tciClientTable->setItem(r, 3, readOnly(audio, true));
-        m_tciClientTable->setItem(r, 4, readOnly(c.iq        ? QStringLiteral("Yes") : QStringLiteral("—"), true));
-        m_tciClientTable->setItem(r, 5, readOnly(c.rxSensors ? QStringLiteral("Yes") : QStringLiteral("—"), true));
-        m_tciClientTable->setItem(r, 6, readOnly(c.txSensors ? QStringLiteral("Yes") : QStringLiteral("—"), true));
-    }
-
-    const int n = list.size();
-    m_tciClientSummary->setText(
-        n == 0 ? QStringLiteral("No TCI clients connected")
-               : QStringLiteral("%1 client%2 connected")
-                     .arg(n).arg(n == 1 ? QString() : QStringLiteral("s")));
-}
-
-#else  // !HAVE_WEBSOCKETS — keep symbols defined for the linker
-
-QWidget* RadioSetupDialog::buildTciTab() { return new QWidget; }
-void     RadioSetupDialog::refreshTciClientTable() {}
-
-#endif
 
 // Extracted to reduce lambda nesting depth in buildNetworkTab()
 // (avoids GCC 13 internal compiler error on Ubuntu 24.04)
