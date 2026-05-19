@@ -6559,9 +6559,16 @@ void MainWindow::buildMenuBar()
         // finished handler to detect a change and recreate the RX audio stream.
         const QString prevComp = m_radioModel.audioCompressionParam();
         const bool wasFresh = !m_radioSetupDialog;
+#ifdef HAVE_WEBSOCKETS
+        showOrRaisePersistent(m_radioSetupDialog,
+                              &m_radioModel, m_audio,
+                              &m_tgxlConn, &m_pgxlConn, &m_antennaGenius,
+                              m_tciServer);
+#else
         showOrRaisePersistent(m_radioSetupDialog,
                               &m_radioModel, m_audio,
                               &m_tgxlConn, &m_pgxlConn, &m_antennaGenius);
+#endif
         if (wasFresh && m_radioSetupDialog)
             wireRadioSetupDialogSignals(m_radioSetupDialog, prevComp);
     });
@@ -6577,9 +6584,16 @@ void MainWindow::buildMenuBar()
     connect(flexControlAction, &QAction::triggered, this, [this] {
         const QString prevComp = m_radioModel.audioCompressionParam();
         const bool wasFresh = !m_radioSetupDialog;
+#ifdef HAVE_WEBSOCKETS
+        showOrRaisePersistent(m_radioSetupDialog,
+                              &m_radioModel, m_audio,
+                              &m_tgxlConn, &m_pgxlConn, &m_antennaGenius,
+                              m_tciServer);
+#else
         showOrRaisePersistent(m_radioSetupDialog,
                               &m_radioModel, m_audio,
                               &m_tgxlConn, &m_pgxlConn, &m_antennaGenius);
+#endif
         if (wasFresh && m_radioSetupDialog)
             wireRadioSetupDialogSignals(m_radioSetupDialog, prevComp);
         if (m_radioSetupDialog)
@@ -6598,9 +6612,16 @@ void MainWindow::buildMenuBar()
     connect(usbCablesAction, &QAction::triggered, this, [this] {
         const QString prevComp = m_radioModel.audioCompressionParam();
         const bool wasFresh = !m_radioSetupDialog;
+#ifdef HAVE_WEBSOCKETS
+        showOrRaisePersistent(m_radioSetupDialog,
+                              &m_radioModel, m_audio,
+                              &m_tgxlConn, &m_pgxlConn, &m_antennaGenius,
+                              m_tciServer);
+#else
         showOrRaisePersistent(m_radioSetupDialog,
                               &m_radioModel, m_audio,
                               &m_tgxlConn, &m_pgxlConn, &m_antennaGenius);
+#endif
         if (wasFresh && m_radioSetupDialog)
             wireRadioSetupDialogSignals(m_radioSetupDialog, prevComp);
         if (m_radioSetupDialog)
@@ -11154,9 +11175,16 @@ void MainWindow::wirePanadapter(PanadapterApplet* applet)
             this, [this]() {
         const QString prevComp = m_radioModel.audioCompressionParam();
         const bool wasFresh = !m_radioSetupDialog;
+#ifdef HAVE_WEBSOCKETS
+        showOrRaisePersistent(m_radioSetupDialog,
+                              &m_radioModel, m_audio,
+                              &m_tgxlConn, &m_pgxlConn, &m_antennaGenius,
+                              m_tciServer);
+#else
         showOrRaisePersistent(m_radioSetupDialog,
                               &m_radioModel, m_audio,
                               &m_tgxlConn, &m_pgxlConn, &m_antennaGenius);
+#endif
         if (wasFresh && m_radioSetupDialog)
             wireRadioSetupDialogSignals(m_radioSetupDialog, prevComp);
         if (m_radioSetupDialog)

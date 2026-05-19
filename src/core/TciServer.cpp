@@ -306,6 +306,7 @@ void TciServer::onNewConnection()
         qCInfo(lcCat) << "TciServer: client connected from"
                       << ws->peerAddress().toString();
         emit clientCountChanged(m_clients.size());
+        emit clientsChanged();
 
         sendInitBurst(ws);
     }
@@ -363,6 +364,27 @@ void TciServer::onClientDisconnected()
     qCInfo(lcCat) << "TciServer: client disconnected,"
                   << m_clients.size() << "remaining";
     emit clientCountChanged(m_clients.size());
+    emit clientsChanged();
+}
+
+QVector<TciClientInfo> TciServer::connectedClients() const
+{
+    QVector<TciClientInfo> out;
+    out.reserve(m_clients.size());
+    for (const auto& cs : m_clients) {
+        if (!cs.socket)
+            continue;
+        TciClientInfo info;
+        info.peerAddress  = cs.socket->peerAddress().toString();
+        info.peerPort     = cs.socket->peerPort();
+        info.audio        = cs.audioEnabled;
+        info.audioReceiver= cs.audioReceiver;
+        info.iq           = cs.iqEnabled;
+        info.rxSensors    = cs.rxSensorsEnabled;
+        info.txSensors    = cs.txSensorsEnabled;
+        out.append(info);
+    }
+    return out;
 }
 
 void TciServer::onTextMessage(const QString& msg)
@@ -417,6 +439,7 @@ void TciServer::onTextMessage(const QString& msg)
                           << "rate=" << client.audioSampleRate
                           << "ch=" << client.audioChannels
                           << "fmt=" << client.audioFormat;
+            emit clientsChanged();
             continue;
         }
         if (trimmed.startsWith("audio_stop")) {
@@ -431,6 +454,7 @@ void TciServer::onTextMessage(const QString& msg)
             ws->sendTextMessage(cmd.trimmed() + ";");
             qCInfo(lcCat) << "TCI: audio stopped for client"
                           << ws->peerAddress().toString();
+            emit clientsChanged();
             continue;
         }
 
