@@ -31,6 +31,11 @@
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLineEdit>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QTime>
+#include <QStandardPaths>
 #include <QSyntaxHighlighter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -1025,6 +1030,12 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
     intro->setStyleSheet("QLabel { color: #8aa8c0; }");
     layout->addWidget(intro);
 
+    auto* clientsHdr = new QLabel(QStringLiteral("Connected clients"));
+    clientsHdr->setStyleSheet(
+        "QLabel { color: #8aa8c0; font-weight: bold; "
+        "letter-spacing: 0.06em; }");
+    layout->addWidget(clientsHdr);
+
     m_tciClientSummary = new QLabel;
     m_tciClientSummary->setStyleSheet(
         "QLabel { color: #c8d8e8; font-weight: bold; }");
@@ -1056,7 +1067,12 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
         "QTableWidget::item:selected { background: #173049; }"
         "QHeaderView::section { background: #111120; color: #8aa8c0; "
         "border: 1px solid #203040; padding: 3px 6px; font-weight: bold; }");
-    layout->addWidget(m_tciClientTable, 1);
+    // Keep the roster compact (~6 rows then scroll) so the monitor below
+    // gets the bulk of the page.
+    m_tciClientTable->setSizePolicy(QSizePolicy::Expanding,
+                                    QSizePolicy::Fixed);
+    m_tciClientTable->setMaximumHeight(196);
+    layout->addWidget(m_tciClientTable, 0);
 
     // Persist a user-assigned alias when the Name cell is edited (stored in
     // the JSON map under one valid key, keyed by client IP held in UserRole).
@@ -1078,6 +1094,74 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
     if (m_tci)
         connect(m_tci, &TciServer::clientsChanged,
                 this, &NetworkDiagnosticsDialog::refreshTciClientTable);
+
+    // ── Live traffic monitor ──────────────────────────────────────────────
+    auto* monHdr = new QLabel(QStringLiteral("TCI traffic monitor"));
+    monHdr->setStyleSheet(
+        "QLabel { color: #8aa8c0; font-weight: bold; "
+        "letter-spacing: 0.06em; }");
+    layout->addWidget(monHdr);
+
+    const QString btnStyle = QStringLiteral(
+        "QPushButton { background: #111120; border: 1px solid #203040; "
+        "border-radius: 3px; color: #c8d8e8; padding: 3px 12px; }"
+        "QPushButton:hover { border-color: #00b4d8; }"
+        "QPushButton:checked { background: #003040; border-color: #ffaa00; "
+        "color: #ffaa00; }");
+
+    auto* tools = new QHBoxLayout;
+    tools->setSpacing(6);
+
+    m_tciPauseBtn = new QPushButton(QStringLiteral("Pause"));
+    m_tciPauseBtn->setCheckable(true);
+    m_tciPauseBtn->setStyleSheet(btnStyle);
+    connect(m_tciPauseBtn, &QPushButton::toggled, this, [this](bool on) {
+        m_tciMonitorPaused = on;
+        m_tciPauseBtn->setText(on ? QStringLiteral("Paused")
+                                  : QStringLiteral("Pause"));
+    });
+    tools->addWidget(m_tciPauseBtn);
+
+    auto* clearBtn = new QPushButton(QStringLiteral("Clear"));
+    clearBtn->setStyleSheet(btnStyle);
+    connect(clearBtn, &QPushButton::clicked, this,
+            [this] { if (m_tciMonitor) m_tciMonitor->clear(); });
+    tools->addWidget(clearBtn);
+
+    auto* saveBtn = new QPushButton(QStringLiteral("Save log…"));
+    saveBtn->setStyleSheet(btnStyle);
+    connect(saveBtn, &QPushButton::clicked,
+            this, &NetworkDiagnosticsDialog::onTciSaveLog);
+    tools->addWidget(saveBtn);
+
+    tools->addSpacing(8);
+    auto* fLbl = new QLabel(QStringLiteral("Filter:"));
+    fLbl->setStyleSheet("QLabel { color: #8aa8c0; }");
+    tools->addWidget(fLbl);
+    m_tciFilter = new QLineEdit;
+    m_tciFilter->setPlaceholderText(
+        QStringLiteral("substring — e.g. vfo, spot, rx_smeter"));
+    m_tciFilter->setClearButtonEnabled(true);
+    m_tciFilter->setStyleSheet(
+        "QLineEdit { background: #0a0a14; border: 1px solid #203040; "
+        "border-radius: 3px; color: #c8d8e8; padding: 3px 6px; }"
+        "QLineEdit:focus { border-color: #00b4d8; }");
+    tools->addWidget(m_tciFilter, 1);
+    layout->addLayout(tools);
+
+    m_tciMonitor = new QPlainTextEdit;
+    m_tciMonitor->setReadOnly(true);
+    m_tciMonitor->setMaximumBlockCount(4000);  // bound memory
+    m_tciMonitor->setWordWrapMode(QTextOption::NoWrap);
+    m_tciMonitor->setStyleSheet(
+        "QPlainTextEdit { background: #07070e; color: #dde6f0; "
+        "border: 1px solid #203040; font-family: Consolas, monospace; "
+        "font-size: 11px; }");
+    layout->addWidget(m_tciMonitor, 1);
+
+    if (m_tci)
+        connect(m_tci, &TciServer::tciMessage,
+                this, &NetworkDiagnosticsDialog::appendTciMessage);
 
     return page;
 }
@@ -1135,10 +1219,88 @@ void NetworkDiagnosticsDialog::refreshTciClientTable()
                      .arg(n).arg(n == 1 ? QString() : QStringLiteral("s")));
 }
 
+// Colour a raw TCI line by its command family — same palette as the
+// standalone TCI Monitor so the embedded view reads identically.
+static QString tciLineColor(const QString& line)
+{
+    const int colon = line.indexOf(QLatin1Char(':'));
+    const QString cmd =
+        (colon < 0 ? line : line.left(colon)).trimmed().toLower();
+    if (cmd == "vfo")                              return QStringLiteral("#00d8ef");
+    if (cmd == "mode" || cmd == "modulation")      return QStringLiteral("#00d8ef");
+    if (cmd == "spot")                             return QStringLiteral("#4cff7c");
+    if (cmd == "spot_delete" || cmd == "spot_clear") return QStringLiteral("#ffaa00");
+    if (cmd == "start" || cmd == "ready" || cmd == "protocol")
+                                                   return QStringLiteral("#6b8099");
+    if (cmd.contains("error"))                     return QStringLiteral("#ff5050");
+    return QStringLiteral("#dde6f0");
+}
+
+void NetworkDiagnosticsDialog::appendTciMessage(const QString& direction,
+                                                const QString& text)
+{
+    if (!m_tciMonitor || m_tciMonitorPaused)
+        return;
+
+    const QString filter = m_tciFilter ? m_tciFilter->text().trimmed()
+                                        : QString();
+    const QString stamp = QTime::currentTime().toString(QStringLiteral("HH:mm:ss"));
+    const bool rx = (direction == QLatin1String("rx"));
+    const QString arrow = rx ? QStringLiteral("&#9654; rx")   // ▶
+                             : QStringLiteral("&#9664; tx");   // ◀
+    const QString dirColor = rx ? QStringLiteral("#9cff00")
+                                : QStringLiteral("#7c9cff");
+
+    // One log row per semicolon-delimited command so colouring + filtering
+    // work per command, matching the standalone monitor.
+    const QStringList cmds = text.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const QString& raw : cmds) {
+        const QString cmd = raw.trimmed();
+        if (cmd.isEmpty())
+            continue;
+        if (!filter.isEmpty() &&
+            !cmd.contains(filter, Qt::CaseInsensitive))
+            continue;
+        const QString esc = cmd.toHtmlEscaped();
+        m_tciMonitor->appendHtml(QStringLiteral(
+            "<span style='color:#6b8099'>[%1]</span> "
+            "<span style='color:%2'>%3</span> "
+            "<span style='color:%4'>%5</span>")
+            .arg(stamp, dirColor, arrow, tciLineColor(cmd), esc));
+    }
+}
+
+void NetworkDiagnosticsDialog::onTciSaveLog()
+{
+    if (!m_tciMonitor)
+        return;
+    const QString stamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString suggested =
+        QStringLiteral("%1/tci-monitor-%2.log").arg(dir, stamp);
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save TCI log"), suggested,
+        QStringLiteral("Log files (*.log);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "TCI monitor: cannot write" << path;
+        return;
+    }
+    QTextStream ts(&f);
+    ts << m_tciMonitor->toPlainText();
+}
+
 #else  // !HAVE_WEBSOCKETS — keep symbols defined for the linker
 
 QWidget* NetworkDiagnosticsDialog::buildTciTab() { return new QWidget(this); }
 void     NetworkDiagnosticsDialog::refreshTciClientTable() {}
+void     NetworkDiagnosticsDialog::appendTciMessage(const QString&,
+                                                    const QString&) {}
+void     NetworkDiagnosticsDialog::onTciSaveLog() {}
 
 #endif
 

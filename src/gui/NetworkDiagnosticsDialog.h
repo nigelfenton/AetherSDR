@@ -15,6 +15,7 @@ class QCheckBox;
 class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
+class QLineEdit;
 
 namespace AetherSDR {
 
@@ -88,6 +89,8 @@ private:
     QWidget* buildLogsTab();
     QWidget* buildTciTab();
     void     refreshTciClientTable();
+    void     appendTciMessage(const QString& direction, const QString& text);
+    void     onTciSaveLog();
     void initializeLogTail();
     bool reopenLogFile(bool keepExistingLines);
     void appendNewLogData();
@@ -106,6 +109,10 @@ private:
     TciServer*  m_tci{nullptr};
     QTableWidget* m_tciClientTable{nullptr};
     QLabel*       m_tciClientSummary{nullptr};
+    QPlainTextEdit* m_tciMonitor{nullptr};
+    QLineEdit*      m_tciFilter{nullptr};
+    QPushButton*    m_tciPauseBtn{nullptr};
+    bool            m_tciMonitorPaused{false};
     QTimer      m_refreshTimer;
     QTimer      m_logRefreshTimer;
     QComboBox*  m_rangeCombo{nullptr};

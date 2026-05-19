@@ -417,6 +417,7 @@ void TciServer::onTextMessage(const QString& msg)
     // forks (Improved, Improved Plus, KN4CRD fork…) send commands our
     // parser doesn't match.  Truncate long ones to keep logs readable.
     qCDebug(lcCat) << "TCI rx:" << msg.left(256);
+    emit tciMessage(QStringLiteral("rx"), msg);
 
     // TCI messages are semicolon-terminated; may contain multiple commands
     const QStringList cmds = msg.split(';', Qt::SkipEmptyParts);
@@ -1273,6 +1274,7 @@ void TciServer::broadcast(const QString& msg)
 {
     for (auto& cs : m_clients)
         cs.socket->sendTextMessage(msg);
+    emit tciMessage(QStringLiteral("tx"), msg);
 }
 
 void TciServer::broadcastBinary(const QByteArray& data)

@@ -99,6 +99,11 @@ signals:
     // (connect, disconnect, audio start/stop). The TCI tab repopulates on
     // this signal.
     void clientsChanged();
+    // Raw TCI text traffic for the embedded monitor. direction is
+    // "rx" (received from a client) or "tx" (broadcast to clients).
+    // One emission per logical message; high-rate per-client telemetry
+    // sends are intentionally not emitted to keep the stream readable.
+    void tciMessage(const QString& direction, const QString& text);
     void rxLevel(int channel, float rms);  // 1-based channel, RMS of TCI-gained RX audio
     void txLevel(float rms);                // RMS of post-gain TCI TX audio
     // Emitted when a TCI client sends `volume:N;` (master volume SET).
