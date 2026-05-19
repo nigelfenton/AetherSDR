@@ -28,6 +28,9 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QStringList>
+#include <QHash>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSyntaxHighlighter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -968,6 +971,43 @@ static QString tciRoleHint(const TciClientInfo& c)
     return QStringLiteral("Control only");
 }
 
+// User-assigned client aliases are stored as ONE AppSettings value holding a
+// JSON {ip: name} map. The IP must NOT be used as a settings key: AppSettings
+// is XML/dotted-path backed, and an address like "10.0.0.78" is an invalid
+// key (segments start with a digit, ':' in IPv6) — it gets silently dropped.
+static const QString kTciAliasKey = QStringLiteral("TciClientAliases");
+
+static QHash<QString, QString> tciAliasMap()
+{
+    const QString raw = AppSettings::instance()
+        .value(kTciAliasKey, QString()).toString();
+    QHash<QString, QString> m;
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    if (doc.isObject()) {
+        const QJsonObject o = doc.object();
+        for (auto it = o.begin(); it != o.end(); ++it)
+            m.insert(it.key(), it.value().toString());
+    }
+    return m;
+}
+
+static void tciAliasSet(const QString& ip, const QString& name)
+{
+    if (ip.isEmpty())
+        return;
+    QHash<QString, QString> m = tciAliasMap();
+    if (name.isEmpty())
+        m.remove(ip);
+    else
+        m.insert(ip, name);
+    QJsonObject o;
+    for (auto it = m.constBegin(); it != m.constEnd(); ++it)
+        o.insert(it.key(), it.value());
+    AppSettings::instance().setValue(kTciAliasKey,
+        QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+    AppSettings::instance().save();
+}
+
 QWidget* NetworkDiagnosticsDialog::buildTciTab()
 {
     auto* page = new QWidget(this);
@@ -1018,20 +1058,17 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
         "border: 1px solid #203040; padding: 3px 6px; font-weight: bold; }");
     layout->addWidget(m_tciClientTable, 1);
 
-    // Persist a user-assigned alias when the Name cell is edited. Keyed by
-    // client IP (the port is per-connection and not stable). itemChanged
-    // also fires during programmatic repopulation — refreshTciClientTable
-    // blocks this signal while it runs, so anything here is a real edit.
+    // Persist a user-assigned alias when the Name cell is edited (stored in
+    // the JSON map under one valid key, keyed by client IP held in UserRole).
+    // itemChanged also fires during programmatic repopulation —
+    // refreshTciClientTable blocks this signal while it runs, so anything
+    // arriving here is a genuine user edit.
     connect(m_tciClientTable, &QTableWidget::itemChanged, this,
             [](QTableWidgetItem* item) {
         if (!item || item->column() != 0)
             return;
-        const QString ip = item->data(Qt::UserRole).toString();
-        if (ip.isEmpty())
-            return;
-        AppSettings::instance().setValue(
-            QStringLiteral("TciClientAlias/") + ip, item->text().trimmed());
-        AppSettings::instance().save();
+        tciAliasSet(item->data(Qt::UserRole).toString(),
+                    item->text().trimmed());
     });
 
     refreshTciClientTable();
@@ -1054,6 +1091,8 @@ void NetworkDiagnosticsDialog::refreshTciClientTable()
 
     // Repopulating fires itemChanged for every setItem — suppress it so the
     // alias-persist handler only ever sees real user edits.
+    const QHash<QString, QString> aliases = tciAliasMap();
+
     QSignalBlocker block(m_tciClientTable);
     m_tciClientTable->setRowCount(list.size());
 
@@ -1068,10 +1107,7 @@ void NetworkDiagnosticsDialog::refreshTciClientTable()
     for (int r = 0; r < list.size(); ++r) {
         const TciClientInfo& c = list[r];
 
-        const QString alias = AppSettings::instance()
-            .value(QStringLiteral("TciClientAlias/") + c.peerAddress, QString())
-            .toString();
-        auto* nameItem = new QTableWidgetItem(alias);
+        auto* nameItem = new QTableWidgetItem(aliases.value(c.peerAddress));
         nameItem->setData(Qt::UserRole, c.peerAddress);
         nameItem->setFlags(nameItem->flags() | Qt::ItemIsEditable);
         nameItem->setToolTip(QStringLiteral(
