@@ -15,6 +15,7 @@
 
 #include <QWebSocketServer>
 #include <QWebSocket>
+#include <QHostAddress>
 #include <QStringList>
 #include <QTimer>
 #include <QtEndian>
@@ -375,7 +376,18 @@ QVector<TciClientInfo> TciServer::connectedClients() const
         if (!cs.socket)
             continue;
         TciClientInfo info;
-        info.peerAddress  = cs.socket->peerAddress().toString();
+        // Normalise the peer address so it is both readable and a STABLE
+        // alias key: collapse IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain
+        // IPv4, and IPv6 loopback (::1) to 127.0.0.1. Otherwise the same
+        // physical client could key its saved Name under two spellings.
+        QHostAddress ha = cs.socket->peerAddress();
+        bool isV4 = false;
+        const quint32 v4 = ha.toIPv4Address(&isV4);
+        if (isV4)
+            ha = QHostAddress(v4);
+        else if (ha.isLoopback())
+            ha = QHostAddress(QHostAddress::LocalHost);
+        info.peerAddress  = ha.toString();
         info.peerPort     = cs.socket->peerPort();
         info.audio        = cs.audioEnabled;
         info.audioReceiver= cs.audioReceiver;
