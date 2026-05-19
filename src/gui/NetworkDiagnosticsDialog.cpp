@@ -31,11 +31,14 @@
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLineEdit>
 #include <QFileDialog>
 #include <QTextStream>
 #include <QTime>
+#include <QMenu>
+#include <QColor>
+#include <QJsonArray>
 #include <QStandardPaths>
+#include <functional>
 #include <QSyntaxHighlighter>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -1102,6 +1105,14 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
         "letter-spacing: 0.06em; }");
     layout->addWidget(monHdr);
 
+    auto* mHelp = new QLabel(QStringLiteral(
+        "Live TCI traffic (both directions). Pause, then right-click a row "
+        "to suppress all messages of that command — same as the standalone "
+        "TCI Monitor."));
+    mHelp->setWordWrap(true);
+    mHelp->setStyleSheet("QLabel { color: #8aa8c0; }");
+    layout->addWidget(mHelp);
+
     const QString btnStyle = QStringLiteral(
         "QPushButton { background: #111120; border: 1px solid #203040; "
         "border-radius: 3px; color: #c8d8e8; padding: 3px 12px; }"
@@ -1124,8 +1135,9 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
 
     auto* clearBtn = new QPushButton(QStringLiteral("Clear"));
     clearBtn->setStyleSheet(btnStyle);
-    connect(clearBtn, &QPushButton::clicked, this,
-            [this] { if (m_tciMonitor) m_tciMonitor->clear(); });
+    connect(clearBtn, &QPushButton::clicked, this, [this] {
+        if (m_tciLogTable) m_tciLogTable->setRowCount(0);
+    });
     tools->addWidget(clearBtn);
 
     auto* saveBtn = new QPushButton(QStringLiteral("Save log…"));
@@ -1134,30 +1146,58 @@ QWidget* NetworkDiagnosticsDialog::buildTciTab()
             this, &NetworkDiagnosticsDialog::onTciSaveLog);
     tools->addWidget(saveBtn);
 
-    tools->addSpacing(8);
-    auto* fLbl = new QLabel(QStringLiteral("Filter:"));
-    fLbl->setStyleSheet("QLabel { color: #8aa8c0; }");
-    tools->addWidget(fLbl);
-    m_tciFilter = new QLineEdit;
-    m_tciFilter->setPlaceholderText(
-        QStringLiteral("substring — e.g. vfo, spot, rx_smeter"));
-    m_tciFilter->setClearButtonEnabled(true);
-    m_tciFilter->setStyleSheet(
-        "QLineEdit { background: #0a0a14; border: 1px solid #203040; "
-        "border-radius: 3px; color: #c8d8e8; padding: 3px 6px; }"
-        "QLineEdit:focus { border-color: #00b4d8; }");
-    tools->addWidget(m_tciFilter, 1);
+    tools->addStretch(1);
+    m_tciSuppressLabel = new QLabel;
+    m_tciSuppressLabel->setStyleSheet("QLabel { color: #ffaa00; }");
+    tools->addWidget(m_tciSuppressLabel);
+    auto* clrSupBtn = new QPushButton(QStringLiteral("Clear suppressions"));
+    clrSupBtn->setStyleSheet(btnStyle);
+    connect(clrSupBtn, &QPushButton::clicked, this, [this] {
+        m_tciSuppressed.clear();
+        AppSettings::instance().setValue(
+            QStringLiteral("TciMonitorSuppressed"), QString());
+        AppSettings::instance().save();
+        refreshTciSuppressLabel();
+    });
+    tools->addWidget(clrSupBtn);
     layout->addLayout(tools);
 
-    m_tciMonitor = new QPlainTextEdit;
-    m_tciMonitor->setReadOnly(true);
-    m_tciMonitor->setMaximumBlockCount(4000);  // bound memory
-    m_tciMonitor->setWordWrapMode(QTextOption::NoWrap);
-    m_tciMonitor->setStyleSheet(
-        "QPlainTextEdit { background: #07070e; color: #dde6f0; "
+    // Restore persisted suppressions (JSON array under one valid key).
+    {
+        const QJsonDocument d = QJsonDocument::fromJson(
+            AppSettings::instance()
+                .value(QStringLiteral("TciMonitorSuppressed"), QString())
+                .toString().toUtf8());
+        if (d.isArray())
+            for (const QJsonValue& v : d.array())
+                m_tciSuppressed.insert(v.toString());
+    }
+
+    m_tciLogTable = new QTableWidget(0, 3, this);
+    m_tciLogTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Time"), QStringLiteral("Dir/Cmd"),
+         QStringLiteral("Message")});
+    m_tciLogTable->verticalHeader()->setVisible(false);
+    m_tciLogTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_tciLogTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_tciLogTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_tciLogTable->setShowGrid(false);
+    m_tciLogTable->horizontalHeader()->setStretchLastSection(true);
+    m_tciLogTable->setColumnWidth(0, 96);
+    m_tciLogTable->setColumnWidth(1, 150);
+    m_tciLogTable->setStyleSheet(
+        "QTableWidget { background: #07070e; color: #dde6f0; "
         "border: 1px solid #203040; font-family: Consolas, monospace; "
-        "font-size: 11px; }");
-    layout->addWidget(m_tciMonitor, 1);
+        "font-size: 11px; gridline-color: transparent; }"
+        "QTableWidget::item:selected { background: #173049; }"
+        "QHeaderView::section { background: #111120; color: #8aa8c0; "
+        "border: 1px solid #203040; padding: 2px 6px; }");
+    m_tciLogTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_tciLogTable, &QTableWidget::customContextMenuRequested,
+            this, &NetworkDiagnosticsDialog::onTciLogContextMenu);
+    layout->addWidget(m_tciLogTable, 1);
+
+    refreshTciSuppressLabel();
 
     if (m_tci)
         connect(m_tci, &TciServer::tciMessage,
@@ -1236,43 +1276,135 @@ static QString tciLineColor(const QString& line)
     return QStringLiteral("#dde6f0");
 }
 
+static QString tciCmdOf(const QString& line)
+{
+    const int colon = line.indexOf(QLatin1Char(':'));
+    return (colon < 0 ? line : line.left(colon)).trimmed().toLower();
+}
+
 void NetworkDiagnosticsDialog::appendTciMessage(const QString& direction,
                                                 const QString& text)
 {
-    if (!m_tciMonitor || m_tciMonitorPaused)
+    if (!m_tciLogTable || m_tciMonitorPaused)
         return;
 
-    const QString filter = m_tciFilter ? m_tciFilter->text().trimmed()
-                                        : QString();
-    const QString stamp = QTime::currentTime().toString(QStringLiteral("HH:mm:ss"));
+    const QString stamp =
+        QTime::currentTime().toString(QStringLiteral("HH:mm:ss.zzz"));
     const bool rx = (direction == QLatin1String("rx"));
-    const QString arrow = rx ? QStringLiteral("&#9654; rx")   // ▶
-                             : QStringLiteral("&#9664; tx");   // ◀
-    const QString dirColor = rx ? QStringLiteral("#9cff00")
-                                : QStringLiteral("#7c9cff");
+    const QString dirTag = rx ? QStringLiteral("▶ ")   // ▶
+                              : QStringLiteral("◀ ");   // ◀
 
-    // One log row per semicolon-delimited command so colouring + filtering
-    // work per command, matching the standalone monitor.
+    // One row per semicolon-delimited command so colour + suppression work
+    // per command, exactly like the standalone monitor.
     const QStringList cmds = text.split(QLatin1Char(';'), Qt::SkipEmptyParts);
     for (const QString& raw : cmds) {
         const QString cmd = raw.trimmed();
         if (cmd.isEmpty())
             continue;
-        if (!filter.isEmpty() &&
-            !cmd.contains(filter, Qt::CaseInsensitive))
+        const QString prefix = tciCmdOf(cmd);
+        if (m_tciSuppressed.contains(prefix))
             continue;
-        const QString esc = cmd.toHtmlEscaped();
-        m_tciMonitor->appendHtml(QStringLiteral(
-            "<span style='color:#6b8099'>[%1]</span> "
-            "<span style='color:%2'>%3</span> "
-            "<span style='color:%4'>%5</span>")
-            .arg(stamp, dirColor, arrow, tciLineColor(cmd), esc));
+
+        constexpr int kMaxRows = 20000;   // rolling window, bound memory
+        if (m_tciLogTable->rowCount() >= kMaxRows)
+            m_tciLogTable->removeRow(0);
+
+        const int row = m_tciLogTable->rowCount();
+        m_tciLogTable->insertRow(row);
+        const QColor colour(tciLineColor(cmd));
+
+        auto* tItem = new QTableWidgetItem(stamp);
+        tItem->setForeground(QColor(QStringLiteral("#6b8099")));
+        auto* cItem = new QTableWidgetItem(dirTag + prefix);
+        cItem->setForeground(rx ? QColor(QStringLiteral("#9cff00"))
+                                : QColor(QStringLiteral("#7c9cff")));
+        auto* mItem = new QTableWidgetItem(cmd);
+        mItem->setForeground(colour);
+        m_tciLogTable->setItem(row, 0, tItem);
+        m_tciLogTable->setItem(row, 1, cItem);
+        m_tciLogTable->setItem(row, 2, mItem);
     }
+    m_tciLogTable->scrollToBottom();
+}
+
+void NetworkDiagnosticsDialog::onTciLogContextMenu(const QPoint& pos)
+{
+    if (!m_tciLogTable)
+        return;
+    const QModelIndex idx = m_tciLogTable->indexAt(pos);
+    const auto sel = m_tciLogTable->selectionModel()->selectedRows();
+
+    QString cmdHere;
+    if (idx.isValid()) {
+        if (auto* it = m_tciLogTable->item(idx.row(), 2))
+            cmdHere = tciCmdOf(it->text());
+    }
+
+    QMenu menu(this);
+    QAction* removeAct = nullptr;
+    if (!sel.isEmpty())
+        removeAct = menu.addAction(sel.size() == 1
+            ? QStringLiteral("Remove this row")
+            : QStringLiteral("Remove %1 selected rows").arg(sel.size()));
+    QAction* suppressAct = nullptr;
+    if (!cmdHere.isEmpty())
+        suppressAct = menu.addAction(
+            QStringLiteral("Suppress all '%1' messages").arg(cmdHere));
+    if (!menu.actions().isEmpty())
+        menu.addSeparator();
+    QAction* clearAct = menu.addAction(QStringLiteral("Clear log"));
+
+    QAction* chosen = menu.exec(m_tciLogTable->viewport()->mapToGlobal(pos));
+    if (!chosen)
+        return;
+    if (chosen == clearAct) {
+        m_tciLogTable->setRowCount(0);
+    } else if (removeAct && chosen == removeAct) {
+        QList<int> rows;
+        for (const QModelIndex& i : sel) rows << i.row();
+        std::sort(rows.begin(), rows.end(), std::greater<int>());
+        for (int r : rows) m_tciLogTable->removeRow(r);
+    } else if (suppressAct && chosen == suppressAct) {
+        tciSuppress(cmdHere);
+    }
+}
+
+void NetworkDiagnosticsDialog::tciSuppress(const QString& cmd)
+{
+    if (cmd.isEmpty() || !m_tciLogTable)
+        return;
+    m_tciSuppressed.insert(cmd);
+    // Drop existing rows of this command for instant relief.
+    for (int r = m_tciLogTable->rowCount() - 1; r >= 0; --r) {
+        auto* it = m_tciLogTable->item(r, 2);
+        if (it && tciCmdOf(it->text()) == cmd)
+            m_tciLogTable->removeRow(r);
+    }
+    QJsonArray arr;
+    for (const QString& s : m_tciSuppressed) arr.append(s);
+    AppSettings::instance().setValue(QStringLiteral("TciMonitorSuppressed"),
+        QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+    AppSettings::instance().save();
+    refreshTciSuppressLabel();
+}
+
+void NetworkDiagnosticsDialog::refreshTciSuppressLabel()
+{
+    if (!m_tciSuppressLabel)
+        return;
+    if (m_tciSuppressed.isEmpty()) {
+        m_tciSuppressLabel->clear();
+        return;
+    }
+    QStringList s(m_tciSuppressed.begin(), m_tciSuppressed.end());
+    s.sort();
+    m_tciSuppressLabel->setText(
+        QStringLiteral("Suppressed: %1").arg(s.join(QStringLiteral(", "))));
 }
 
 void NetworkDiagnosticsDialog::onTciSaveLog()
 {
-    if (!m_tciMonitor)
+    if (!m_tciLogTable)
         return;
     const QString stamp =
         QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
@@ -1291,7 +1423,14 @@ void NetworkDiagnosticsDialog::onTciSaveLog()
         return;
     }
     QTextStream ts(&f);
-    ts << m_tciMonitor->toPlainText();
+    for (int r = 0; r < m_tciLogTable->rowCount(); ++r) {
+        const auto* t = m_tciLogTable->item(r, 0);
+        const auto* c = m_tciLogTable->item(r, 1);
+        const auto* m = m_tciLogTable->item(r, 2);
+        ts << (t ? t->text() : QString()) << '\t'
+           << (c ? c->text() : QString()) << '\t'
+           << (m ? m->text() : QString()) << '\n';
+    }
 }
 
 #else  // !HAVE_WEBSOCKETS — keep symbols defined for the linker
@@ -1301,6 +1440,9 @@ void     NetworkDiagnosticsDialog::refreshTciClientTable() {}
 void     NetworkDiagnosticsDialog::appendTciMessage(const QString&,
                                                     const QString&) {}
 void     NetworkDiagnosticsDialog::onTciSaveLog() {}
+void     NetworkDiagnosticsDialog::onTciLogContextMenu(const QPoint&) {}
+void     NetworkDiagnosticsDialog::tciSuppress(const QString&) {}
+void     NetworkDiagnosticsDialog::refreshTciSuppressLabel() {}
 
 #endif
 
