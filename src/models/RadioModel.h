@@ -372,6 +372,10 @@ public:
 
     QList<SliceModel*> slices() const { return m_slices; }
     SliceModel* slice(int id) const;
+    // The slice that transmits (IsTransmitSlice), or nullptr if none. Mirrors
+    // FlexLib's TX-slice scan (CWX::getTXFrequency, CWX.cs:186) — keyer/CWX
+    // targeting follows this slice, not the selected RX slice.
+    SliceModel* txSlice() const;
     QMap<int, QString> rawSliceModeLists() const { return m_rawSliceModeLists; }
     int rawModeOccurrenceCount(const QString& mode) const;
     int activeTxSliceNum() const;
@@ -499,8 +503,9 @@ signals:
     // Emitted when a previous-session pan model is reclaimed on reconnect
     // instead of created fresh. The applet/widget wiring from the original
     // panadapterAdded survives (model and widget both outlive the disconnect),
-    // but connections MainWindow tears down at disconnect (per-pan FPS and
-    // waterfall line-duration reconcilers) must be re-established from this.
+    // but connections MainWindow tears down at disconnect (the per-pan
+    // radio-status display connections wired by wirePanDisplayStatus(), #4261)
+    // must be re-established from this.
     void panadapterReclaimed(PanadapterModel* pan);
     void panadapterRemoved(const QString& panId);
     // Emitted when createPanadapter() is blocked because the radio's pan limit is reached.
@@ -930,7 +935,6 @@ private:
     int bandIdForFrequency(double freqMhz) const;  // map TX freq → band ID
     void applyTuneInhibit();    // suppress selected TX outputs before tune
     void restoreTuneInhibit();  // re-enable TX outputs after tune
-    SliceModel* txSlice() const;
     QString transmitInhibitMessageForSlice(const SliceModel* slice) const;
     QString transmitInhibitMessageForTxSlice() const;
     void enforceTransmitInhibitForPan(const QString& panId);
@@ -1084,7 +1088,7 @@ private:
     enum class NetState { Off, Excellent, VeryGood, Good, Fair, Poor };
     void applyAdaptiveFrameRate(NetState newState, NetState oldState);
     static int fpsCapForState(NetState s);  // single source of truth; see obs. 1 in PR review
-    int  adaptiveWfMsForCap(int fpsCap) const;
+    // adaptiveWfMsForCap() moved to the public network-diagnostics section (#4261).
     void sendAdaptiveCapToPan(const QString& panId, int fpsCap);
     double networkQualityTargetScore(int pingMs) const;
     NetState networkStateForScore(double score, NetState currentState) const;
@@ -1139,6 +1143,10 @@ public:
     int     maxPingRtt()       const { return m_maxPingRtt; }
     bool    pendingThrottleLift() const { return m_pendingThrottleLift; }
     int     currentAdaptiveFpsCap() const;  // 0 = throttle inactive
+    // Waterfall line-duration the adaptive throttle caps to for a given fps cap.
+    // Public so MainWindow can recognize (and suppress) that cap's own status
+    // echo while distinguishing it from a real radio/profile update (#4261).
+    int     adaptiveWfMsForCap(int fpsCap) const;
     QString networkQuality()   const;
     int     packetLossWindowSeconds() const { return NETWORK_LOSS_WINDOW_SAMPLES; }
     int     packetLossWindowDrops() const { return m_packetLossWindowErrors; }

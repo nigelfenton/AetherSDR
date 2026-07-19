@@ -256,6 +256,7 @@ transmit-gated verbs (refused unless `AETHER_AUTOMATION_ALLOW_TX=1` — see
 | | [`get flags`](#get) | VFO flag attachment state for slice-to-pan assertions. |
 | | [`get cwx`](#get-cwx) | CWX keyer state + queue-drain watch (#3949). |
 | | [`get panstats`](#get-panstats) | Per-panadapter render-cost counters (profiling). |
+| | [`get renderstats`](#get-renderstats) | Combined 2D/3D pan, waterfall, DSS, scheduler, and WAVE profiling snapshot. |
 | | [`get tracedebug`](#get-tracedebug) | Per-panadapter Flex/Kiwi FFT and 3D trace diagnostics. |
 | | [`get clients`](#get-clients) | Radio client roster, GUI IDs + foreign-pan-write forensics (#3977/#4166). |
 | | [`get sync`](#get-sync) | Receive-Sync (Auto Assist) state. |
@@ -605,6 +606,18 @@ chunks dispatched to Receive Presentation Sync analysis, while
 that were captured for automation but skipped because no KiwiSDR audio source
 was active.
 
+The TX input endpoint also exposes in-memory capture-health evidence for TCI
+handoffs: `buffer_bytes_available`, `buffer_capacity_bytes`,
+`source_was_active`, `saturation_observed`, `tci_suppressed_callbacks`,
+`full_buffer_during_tci_observations`, `idle_during_tci_transitions`,
+`post_tci_local_tx_while_saturated`, and `last_mic_read_age_ms`.
+`saturation_observed` is set when the capture buffer reaches its reported
+capacity during TCI suppression. An Active-to-Idle transition with suppressed
+callbacks and unread bytes remains a fallback for backends that do not expose a
+useful capacity. The same evidence is written to the Audio Summary support log
+only when Help → Support's **CAT/rigctld** logging toggle (the category used by
+TCI debug logging) is enabled; TX capture-health summaries are off by default.
+
 ### `get cwx`
 CWX keyer state, including the **queue-drain watch** that the #3949 fix relies
 on. Firmware never emits `cwx queue=`, so the client detects a drained CWX buffer
@@ -686,6 +699,36 @@ until `lastCommand.pending` is false, require `lastCommand.code == 0`, then
 poll the raw mode lists after the automatic slice-status resync. The verb is
 generic; the bridge does not embed or preserve an old registration name.
 
+### `get renderstats`
+
+Combined rendering-analysis snapshot for before/after automation. It returns
+every `panstats` entry, every WAVE/strip `wavestats` entry, the shared pan
+scheduler, and non-overlapping headline totals. The totals cover measured
+GUI-thread FFT ingest, native/Kiwi waterfall ingest, GPU frame preparation,
+software fallback painting, and WAVE painting. DSS timings are reported
+separately because they are a subset of FFT/waterfall ingest.
+
+```json
+→ {"cmd":"get","model":"renderstats","selector":"reset"}
+← {"ok":true,"model":"renderstats",
+   "totals":{"panCount":1,"visiblePanCount":1,"waveScopeCount":1,
+     "fftFramesPerSec":24.9,"gpuFramesPerSec":25.1,
+     "fftIngestMsPerSec":4.2,"nativeWaterfallUpdateMsPerSec":3.8,
+     "gpuFrameMsPerSec":2.7,"wavePaintMsPerSec":0.0,
+     "measuredMainThreadMsPerSec":10.7,
+     "hiddenWaterfallUpdatesPerSec":0.0,
+     "hiddenDssHistoryRowsPerSec":0.0,
+     "waterfallAllocatedBytes":102760448,
+     "dssAllocatedBytes":37847040},
+   "pans":[...],"scopes":[...],"renderScheduler":{...}}
+```
+
+Use `get renderstats reset`, wait for a fixed observation interval, then read
+`get renderstats reset` again. This gives disjoint samples across pan, waterfall,
+3DSS, scheduler, and WAVE counters with one command. `measuredMainThreadMsPerSec`
+is instrumented GUI-thread work, not whole-process CPU percentage; use it for
+causal comparisons while keeping the radio/display configuration fixed.
+
 ### `get panstats`
 Per-panadapter (SpectrumWidget) frame-cost counters — how much GUI-thread time
 each pan spends preparing frames, split by pipeline section, for before/after
@@ -716,6 +759,10 @@ cost a few integer adds per frame.
 | `overlayRebuilds*`, `overlayUploadBytesPerSec` | static-overlay QPainter repaints (should be ~0/s when idle) |
 | `overlayDirtyCauses` | first-cause attribution for each overlay rebuild (`smartMtr`, `detect`, `other`) |
 | `wfUploadBytesPerSec` | waterfall texture upload volume |
+| `nativeWaterfall*` / `kiwiWaterfall*` | source-specific ingest rate and GUI-thread cost; `HiddenUpdates` identifies background Flex/Kiwi work |
+| `waterfallVisibleRows*` / `waterfallHistoryRows*` | viewport and retained RGB-history write rates/cost (RGB history is written only for the visible source) |
+| `dssLiveRows*` / `dssHistoryRows*` | 96-row live 3D surface work versus deep retained scrollback work; `dssHiddenLiveRowsPerSec` exposes the hidden-Flex live-ring warming (#4081) — hidden sources retain no deep history |
+| `waterfallAllocatedBytes` / `dssAllocatedBytes` | current plus cached Flex/Kiwi/profile storage, including hidden-source retained history |
 | `paintsPerSec` / `paintMsPerSec` | software-QPainter path (non-zero only before QRhi init or in non-GPU builds) |
 | `renderScheduler` | shared panadapter repaint scheduler counters; `coalescedRequests` and `avgWidgetsPerFlush` show cross-pan request coalescing |
 

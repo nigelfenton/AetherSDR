@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(AetherSDR VERSION 26.7.2 LANGUAGES C CXX)
+project(AetherSDR VERSION 26.7.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -776,6 +776,9 @@ set(GUI_SOURCES
     src/gui/RxApplet.cpp
     src/gui/AdaptiveFilterControls.cpp
     src/gui/FilterPassbandWidget.cpp
+    src/gui/AnalogMeterFaceTheme.cpp
+    src/gui/RadioSwrValidityFilter.cpp
+    src/gui/SMeterGeometry.cpp
     src/gui/SMeterWidget.cpp
     src/gui/CrossNeedleMeterGeometry.cpp
     src/gui/CrossNeedleMeterWidget.cpp
@@ -2293,6 +2296,30 @@ target_include_directories(theme_manager_test PRIVATE src)
 target_link_libraries(theme_manager_test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 add_test(NAME theme_manager_test COMMAND theme_manager_test)
 
+# AppSettings persistence safety. Each scenario is a separate process because
+# AppSettings is a process-wide singleton and load state must not leak between
+# cases.
+add_executable(app_settings_safety_test
+    tests/app_settings_safety_test.cpp
+    src/core/AppSettings.cpp
+)
+target_include_directories(app_settings_safety_test PRIVATE src)
+target_link_libraries(app_settings_safety_test PRIVATE Qt6::Core)
+foreach(APP_SETTINGS_SCENARIO
+        save-before-load
+        load-then-save
+        first-run
+        count-guard
+        backup-recovery
+        missing-live-temp
+        missing-live-backup
+        missing-live-corrupt
+        failed-load)
+    add_test(
+        NAME app_settings_safety_${APP_SETTINGS_SCENARIO}
+        COMMAND app_settings_safety_test ${APP_SETTINGS_SCENARIO})
+endforeach()
+
 add_executable(panadapter_model_rx_antenna_test
     tests/panadapter_model_rx_antenna_test.cpp
     src/models/PanadapterModel.cpp
@@ -2320,6 +2347,11 @@ add_executable(model_capabilities_test
 target_include_directories(model_capabilities_test PRIVATE src)
 target_link_libraries(model_capabilities_test PRIVATE Qt6::Core)
 add_test(NAME model_capabilities_test COMMAND model_capabilities_test)
+
+# Adaptive-throttle display-status echo gate (#4261) — header-only pure logic.
+add_executable(display_status_gate_test tests/display_status_gate_test.cpp)
+target_include_directories(display_status_gate_test PRIVATE src)
+add_test(NAME display_status_gate_test COMMAND display_status_gate_test)
 
 # KiwiSDR band-recall re-bind policy (#4158) — header-only, pure logic.
 add_executable(kiwi_rebind_tracker_test tests/kiwi_rebind_tracker_test.cpp)
@@ -2433,6 +2465,16 @@ add_executable(audio_output_router_test
 target_include_directories(audio_output_router_test PRIVATE src)
 target_link_libraries(audio_output_router_test PRIVATE Qt6::Core Qt6::Multimedia)
 add_test(NAME audio_output_router_test COMMAND audio_output_router_test)
+
+# Hardware-free state-machine coverage for the opt-in TX capture health
+# summary. Reproduces the Qt pull-mode Active -> Idle/full-buffer signature and
+# verifies anomaly rate limiting without requiring PipeWire or an audio device.
+add_executable(tx_capture_health_test
+    tests/tx_capture_health_test.cpp
+)
+target_include_directories(tx_capture_health_test PRIVATE src)
+target_link_libraries(tx_capture_health_test PRIVATE Qt6::Core)
+add_test(NAME tx_capture_health_test COMMAND tx_capture_health_test)
 
 # Regression test for #4003 — QsoRecorder must not dereference a SliceModel that
 # was freed (reconnect prune) before recording starts. QPointer auto-nulls the
@@ -2827,6 +2869,7 @@ add_test(NAME radio_status_ownership_test COMMAND radio_status_ownership_test)
 qt_add_resources(CROSS_NEEDLE_METER_TEST_RESOURCES resources/resources.qrc)
 add_executable(cross_needle_meter_test
     tests/cross_needle_meter_test.cpp
+    src/gui/AnalogMeterFaceTheme.cpp
     src/gui/CrossNeedleMeterGeometry.cpp
     src/gui/CrossNeedleMeterWidget.cpp
     ${CROSS_NEEDLE_METER_TEST_RESOURCES}
@@ -2838,6 +2881,29 @@ target_link_libraries(cross_needle_meter_test PRIVATE
 set_target_properties(cross_needle_meter_test PROPERTIES AUTOMOC ON)
 add_test(NAME cross_needle_meter_test COMMAND cross_needle_meter_test)
 set_tests_properties(cross_needle_meter_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Versioned standard S-meter face: responsive geometry, calibrated mappings,
+# resource validation/fallback, and offscreen rendering of every meter mode.
+add_executable(s_meter_geometry_test
+    tests/s_meter_geometry_test.cpp
+    src/gui/AnalogMeterFaceTheme.cpp
+    src/gui/RadioSwrValidityFilter.cpp
+    src/gui/SMeterGeometry.cpp
+    src/gui/SMeterWidget.cpp
+    src/core/ThemeManager.cpp
+    src/core/AppSettings.cpp
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+    ${CROSS_NEEDLE_METER_TEST_RESOURCES}
+)
+target_include_directories(s_meter_geometry_test PRIVATE src)
+target_link_libraries(s_meter_geometry_test PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets
+)
+set_target_properties(s_meter_geometry_test PROPERTIES AUTOMOC ON)
+add_test(NAME s_meter_geometry_test COMMAND s_meter_geometry_test)
+set_tests_properties(s_meter_geometry_test PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # MCP server field-mapping / protocol regression test (#4177). Pure Python,
@@ -3150,6 +3216,27 @@ if(UNIX)
 endif()
 set_target_properties(meter_model_test PROPERTIES AUTOMOC ON)
 add_test(NAME meter_model_test COMMAND meter_model_test)
+
+add_executable(health_applet_test
+    tests/health_applet_test.cpp
+    src/gui/HealthApplet.cpp
+    src/models/MeterModel.cpp
+    src/core/ThemeManager.cpp
+    src/core/AppSettings.cpp
+    src/core/LogManager.cpp
+    src/core/AsyncLogWriter.cpp
+)
+target_include_directories(health_applet_test PRIVATE src)
+target_link_libraries(health_applet_test PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test
+)
+if(UNIX)
+    target_link_libraries(health_applet_test PRIVATE pthread)
+endif()
+set_target_properties(health_applet_test PROPERTIES AUTOMOC ON)
+add_test(NAME health_applet_test COMMAND health_applet_test)
+set_tests_properties(health_applet_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(vu_meter_settings_test
     tests/vu_meter_settings_test.cpp

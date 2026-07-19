@@ -1768,9 +1768,10 @@ MainWindow::MainWindow(QWidget* parent)
         if (m_titleBar)
             m_titleBar->setThrottleFlashColor(active ? fpsCapColor(fpsCap) : QString{});
         if (!active) {
-            // Throttle lifted — push each pan's user-configured fps back to the radio.
-            // The reconcile timers are suppressed while throttle is active, so they
-            // won't have done this automatically.
+            // Throttle lifted — restore the radio values captured in each
+            // SpectrumWidget before the transient cap status arrived. Live
+            // fps/line-duration status is deliberately held out of the widgets
+            // while throttled, so the cap never becomes profile state.
             if (profileLoadRadioStateWritesHeld()) {
                 qCDebug(lcProtocol)
                     << "MainWindow: adaptive throttle restore suppressed during profile load";
@@ -3951,9 +3952,11 @@ void MainWindow::buildUI()
     // CWX panel — left of spectrum, hidden by default
     m_cwxPanel = new CwxPanel(&m_radioModel.cwxModel(), splitter);
     // Provide state probes so CWX can guard its F1-F12 / ESC app-wide
-    // shortcuts on mode + transmit state (#1552).
-    m_cwxPanel->setActiveModeProvider([this]() {
-        auto* s = activeSlice();
+    // shortcuts on the TX slice's mode + transmit state.  CWX keys the TX
+    // slice, so the mode guard follows it, not the selected RX slice — matching
+    // the indicator's availability (#1552, #4173).
+    m_cwxPanel->setTxModeProvider([this]() {
+        auto* s = m_radioModel.txSlice();
         return s ? s->mode() : QString();
     });
     m_cwxPanel->setTransmittingProvider([this]() {
@@ -5315,58 +5318,13 @@ void MainWindow::onConnectionStateChanged(bool connected)
         if (m_audio)
             m_audio->setTxStreamId(0);
 
-        for (auto it = m_panFpsReconcileConnections.begin();
-             it != m_panFpsReconcileConnections.end(); ++it) {
-            QObject::disconnect(it.value());
-        }
-        m_panFpsReconcileConnections.clear();
-        for (auto it = m_wfLineDurationReconcileConnections.begin();
-             it != m_wfLineDurationReconcileConnections.end(); ++it) {
-            QObject::disconnect(it.value());
-        }
-        m_wfLineDurationReconcileConnections.clear();
-        for (auto it = m_panFpsReconcile.begin();
-             it != m_panFpsReconcile.end(); ++it) {
-            if (it->timer) {
-                it->timer->stop();
-                it->timer->deleteLater();
+        for (auto it = m_panDisplayStatusConnections.cbegin();
+             it != m_panDisplayStatusConnections.cend(); ++it) {
+            for (const QMetaObject::Connection& connection : it.value()) {
+                QObject::disconnect(connection);
             }
         }
-        m_panFpsReconcile.clear();
-        for (auto it = m_wfLineDurationReconcile.begin();
-             it != m_wfLineDurationReconcile.end(); ++it) {
-            if (it->timer) {
-                it->timer->stop();
-                it->timer->deleteLater();
-            }
-        }
-        m_wfLineDurationReconcile.clear();
-        for (auto it = m_panAverageReconcileConnections.begin();
-             it != m_panAverageReconcileConnections.end(); ++it) {
-            QObject::disconnect(it.value());
-        }
-        m_panAverageReconcileConnections.clear();
-        for (auto it = m_panWeightedAvgReconcileConnections.begin();
-             it != m_panWeightedAvgReconcileConnections.end(); ++it) {
-            QObject::disconnect(it.value());
-        }
-        m_panWeightedAvgReconcileConnections.clear();
-        for (auto it = m_panAverageReconcile.begin();
-             it != m_panAverageReconcile.end(); ++it) {
-            if (it->timer) {
-                it->timer->stop();
-                it->timer->deleteLater();
-            }
-        }
-        m_panAverageReconcile.clear();
-        for (auto it = m_panWeightedAvgReconcile.begin();
-             it != m_panWeightedAvgReconcile.end(); ++it) {
-            if (it->timer) {
-                it->timer->stop();
-                it->timer->deleteLater();
-            }
-        }
-        m_panWeightedAvgReconcile.clear();
+        m_panDisplayStatusConnections.clear();
         m_adaptiveThrottleActive = false;
         m_adaptiveFpsCap = 0;  // clear cap alongside throttle flag — see #2829 review
 
@@ -6280,8 +6238,8 @@ void MainWindow::setActiveSliceInternal(int sliceId, bool revealOffscreen)
     routeRttyDecoderOutput();
     refreshRttyDecodeState();
 
-    // Update CWX/DVK indicator availability for this slice's mode
-    updateKeyerAvailability(s->mode());
+    // Update CWX/DVK indicator availability (follows the TX slice, #4173)
+    updateKeyerAvailability();
 
     // Detect band from frequency
     if (m_bandSettings.currentBand().isEmpty())
@@ -6722,458 +6680,6 @@ void MainWindow::refreshCwDecodeState()
     // silence fine.
     if (m_audio)
         m_audio->setCwDecodeTxTapEnabled(txOn);
-}
-
-void MainWindow::schedulePanFpsReconcile(const QString& panId, int reportedFps)
-{
-    if (panId.isEmpty() || reportedFps <= 0)
-        return;
-    // While adaptive throttle is active the radio fps is intentionally below the
-    // user's desired value. Don't fight the throttle — MainWindow restores fps
-    // when adaptiveThrottleChanged(false) fires.
-    if (m_adaptiveThrottleActive) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: fps reconcile suppressed for pan=" << panId
-            << " reported=" << reportedFps << " (adaptive throttle active)";
-        return;
-    }
-    if (profileLoadRadioStateWritesHeld()) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: fps reconcile suppressed for profile load pan=" << panId
-            << " reported=" << reportedFps;
-        return;
-    }
-
-    auto* pan = m_radioModel.panadapter(panId);
-    if (!pan)
-        return;
-
-    auto& state = m_panFpsReconcile[panId];
-    if (!state.spectrum) {
-        if (auto* applet = m_panStack->panadapter(panId))
-            state.spectrum = applet->spectrumWidget();
-    }
-
-    auto* sw = state.spectrum.data();
-    if (!sw)
-        return;
-
-    const int desiredFps = sw->fftFps();
-    if (desiredFps <= 0)
-        return;
-    if (desiredFps == reportedFps) {
-        if (state.timer)
-            state.timer->stop();
-        state.lastSentMs = 0;
-        state.lastSentDesired = -1;
-        return;
-    }
-
-    if (!state.timer) {
-        state.timer = new QTimer(this);
-        state.timer->setSingleShot(true);
-        state.timer->setInterval(300);
-        connect(state.timer, &QTimer::timeout, this, [this, panId]() {
-            auto it = m_panFpsReconcile.find(panId);
-            if (it == m_panFpsReconcile.end())
-                return;
-
-            auto* pan = m_radioModel.panadapter(panId);
-            auto* sw = it->spectrum.data();
-            if (!sw) {
-                if (auto* applet = m_panStack->panadapter(panId)) {
-                    sw = applet->spectrumWidget();
-                    it->spectrum = sw;
-                }
-            }
-            if (!pan || !sw)
-                return;
-            if (profileLoadRadioStateWritesHeld()) {
-                qCDebug(lcProtocol).noquote().nospace()
-                    << "MainWindow: fps timer suppressed for profile load pan=" << panId;
-                return;
-            }
-
-            const int reported = pan->fps();
-            const int desired = sw->fftFps();
-            if (reported <= 0 || desired <= 0 || reported == desired)
-                return;
-
-            constexpr qint64 kCooldownMs = 5000;
-            const qint64 now = QDateTime::currentMSecsSinceEpoch();
-            if (it->lastSentDesired == desired
-                && it->lastSentMs > 0
-                && now - it->lastSentMs < kCooldownMs) {
-                return;
-            }
-
-            qCDebug(lcProtocol).noquote().nospace()
-                << "MainWindow: reasserting panadapter FPS pan=" << panId
-                << " reported=" << reported
-                << " desired=" << desired;
-            m_radioModel.sendCommand(
-                QString("display pan set %1 fps=%2").arg(panId).arg(desired));
-            it->lastSentMs = now;
-            it->lastSentDesired = desired;
-        });
-    }
-
-    state.timer->start();
-}
-
-void MainWindow::schedulePanAverageReconcile(const QString& panId, int reportedAverage)
-{
-    // FFT averaging is radio-authoritative (#4001): the firmware runs the
-    // averaging and echoes the level in pan status. After a global-profile /
-    // band switch the firmware adopts the profile's stored average, but the
-    // client never re-asserts the user's displayed level. Mirror the fps
-    // reconcile — reuse the profile-load write-hold + cooldown guards. Unlike
-    // fps, averaging is NOT adaptively throttled, so there is deliberately NO
-    // adaptive-throttle guard here. average=0 (off) is a VALID desired value, so
-    // guard on < 0 (the unknown sentinel), never <= 0.
-    if (panId.isEmpty() || reportedAverage < 0)
-        return;
-    if (profileLoadRadioStateWritesHeld()) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: average reconcile suppressed for profile load pan=" << panId
-            << " reported=" << reportedAverage;
-        return;
-    }
-
-    auto* pan = m_radioModel.panadapter(panId);
-    if (!pan)
-        return;
-
-    auto& state = m_panAverageReconcile[panId];
-    if (!state.spectrum) {
-        if (auto* applet = m_panStack->panadapter(panId))
-            state.spectrum = applet->spectrumWidget();
-    }
-
-    auto* sw = state.spectrum.data();
-    if (!sw)
-        return;
-
-    const int desiredAverage = sw->fftAverage();
-    if (desiredAverage < 0)
-        return;
-    if (desiredAverage == reportedAverage) {
-        if (state.timer)
-            state.timer->stop();
-        state.lastSentMs = 0;
-        state.lastSentDesired = -1;
-        return;
-    }
-
-    if (!state.timer) {
-        state.timer = new QTimer(this);
-        state.timer->setSingleShot(true);
-        state.timer->setInterval(300);
-        connect(state.timer, &QTimer::timeout, this, [this, panId]() {
-            auto it = m_panAverageReconcile.find(panId);
-            if (it == m_panAverageReconcile.end())
-                return;
-
-            auto* pan = m_radioModel.panadapter(panId);
-            auto* sw = it->spectrum.data();
-            if (!sw) {
-                if (auto* applet = m_panStack->panadapter(panId)) {
-                    sw = applet->spectrumWidget();
-                    it->spectrum = sw;
-                }
-            }
-            if (!pan || !sw)
-                return;
-            if (profileLoadRadioStateWritesHeld()) {
-                qCDebug(lcProtocol).noquote().nospace()
-                    << "MainWindow: average timer suppressed for profile load pan=" << panId;
-                return;
-            }
-
-            const int reported = pan->average();
-            const int desired = sw->fftAverage();
-            if (reported < 0 || desired < 0 || reported == desired)
-                return;
-
-            constexpr qint64 kCooldownMs = 5000;
-            const qint64 now = QDateTime::currentMSecsSinceEpoch();
-            if (it->lastSentDesired == desired
-                && it->lastSentMs > 0
-                && now - it->lastSentMs < kCooldownMs) {
-                return;
-            }
-
-            qCDebug(lcProtocol).noquote().nospace()
-                << "MainWindow: reasserting panadapter average pan=" << panId
-                << " reported=" << reported
-                << " desired=" << desired;
-            m_radioModel.sendCommand(
-                QString("display pan set %1 average=%2").arg(panId).arg(desired));
-            it->lastSentMs = now;
-            it->lastSentDesired = desired;
-        });
-    }
-
-    state.timer->start();
-}
-
-void MainWindow::schedulePanWeightedAvgReconcile(const QString& panId, bool reportedWeighted)
-{
-    // weighted_average has the identical latent gap (#4001): a band switch via
-    // global profile adopts the profile's stored flag and the client never
-    // re-asserts the user's checkbox. Mirror the average reconcile; the wire
-    // field is a bool flag (weighted_average=0/1). No adaptive-throttle guard.
-    if (panId.isEmpty())
-        return;
-    if (profileLoadRadioStateWritesHeld()) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: weighted_average reconcile suppressed for profile load pan=" << panId
-            << " reported=" << reportedWeighted;
-        return;
-    }
-
-    auto* pan = m_radioModel.panadapter(panId);
-    if (!pan)
-        return;
-
-    auto& state = m_panWeightedAvgReconcile[panId];
-    if (!state.spectrum) {
-        if (auto* applet = m_panStack->panadapter(panId))
-            state.spectrum = applet->spectrumWidget();
-    }
-
-    auto* sw = state.spectrum.data();
-    if (!sw)
-        return;
-
-    const bool desiredWeighted = sw->fftWeightedAvg();
-    if (desiredWeighted == reportedWeighted) {
-        if (state.timer)
-            state.timer->stop();
-        state.lastSentMs = 0;
-        state.lastSentDesired = -1;
-        return;
-    }
-
-    if (!state.timer) {
-        state.timer = new QTimer(this);
-        state.timer->setSingleShot(true);
-        state.timer->setInterval(300);
-        connect(state.timer, &QTimer::timeout, this, [this, panId]() {
-            auto it = m_panWeightedAvgReconcile.find(panId);
-            if (it == m_panWeightedAvgReconcile.end())
-                return;
-
-            auto* pan = m_radioModel.panadapter(panId);
-            auto* sw = it->spectrum.data();
-            if (!sw) {
-                if (auto* applet = m_panStack->panadapter(panId)) {
-                    sw = applet->spectrumWidget();
-                    it->spectrum = sw;
-                }
-            }
-            if (!pan || !sw)
-                return;
-            if (profileLoadRadioStateWritesHeld()) {
-                qCDebug(lcProtocol).noquote().nospace()
-                    << "MainWindow: weighted_average timer suppressed for profile load pan=" << panId;
-                return;
-            }
-
-            const bool reported = pan->weightedAverage();
-            const bool desired = sw->fftWeightedAvg();
-            if (reported == desired)
-                return;
-
-            constexpr qint64 kCooldownMs = 5000;
-            const qint64 now = QDateTime::currentMSecsSinceEpoch();
-            const int desiredInt = desired ? 1 : 0;
-            if (it->lastSentDesired == desiredInt
-                && it->lastSentMs > 0
-                && now - it->lastSentMs < kCooldownMs) {
-                return;
-            }
-
-            qCDebug(lcProtocol).noquote().nospace()
-                << "MainWindow: reasserting panadapter weighted_average pan=" << panId
-                << " reported=" << reported
-                << " desired=" << desired;
-            m_radioModel.sendCommand(
-                QString("display pan set %1 weighted_average=%2").arg(panId).arg(desiredInt));
-            it->lastSentMs = now;
-            it->lastSentDesired = desiredInt;
-        });
-    }
-
-    state.timer->start();
-}
-
-void MainWindow::scheduleWaterfallLineDurationReconcile(const QString& panId, int reportedMs)
-{
-    if (panId.isEmpty() || reportedMs <= 0)
-        return;
-    if (m_adaptiveThrottleActive) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: wf line_duration reconcile suppressed for pan=" << panId
-            << " reported=" << reportedMs << "ms (adaptive throttle active)";
-        return;
-    }
-    if (profileLoadRadioStateWritesHeld()) {
-        qCDebug(lcProtocol).noquote().nospace()
-            << "MainWindow: wf line_duration reconcile suppressed for profile load pan=" << panId
-            << " reported=" << reportedMs << "ms";
-        return;
-    }
-
-    auto* pan = m_radioModel.panadapter(panId);
-    if (!pan)
-        return;
-
-    auto& state = m_wfLineDurationReconcile[panId];
-    if (!state.spectrum) {
-        if (auto* applet = m_panStack->panadapter(panId))
-            state.spectrum = applet->spectrumWidget();
-    }
-
-    auto* sw = state.spectrum.data();
-    if (!sw)
-        return;
-
-    const int desiredMs = sw->wfLineDuration();
-    if (desiredMs <= 0)
-        return;
-    if (desiredMs == reportedMs) {
-        if (state.timer)
-            state.timer->stop();
-        state.lastSentMs = 0;
-        state.lastSentDesired = -1;
-        return;
-    }
-
-    if (!state.timer) {
-        state.timer = new QTimer(this);
-        state.timer->setSingleShot(true);
-        state.timer->setInterval(300);
-        connect(state.timer, &QTimer::timeout, this, [this, panId]() {
-            auto it = m_wfLineDurationReconcile.find(panId);
-            if (it == m_wfLineDurationReconcile.end())
-                return;
-
-            auto* pan = m_radioModel.panadapter(panId);
-            auto* sw = it->spectrum.data();
-            if (!sw) {
-                if (auto* applet = m_panStack->panadapter(panId)) {
-                    sw = applet->spectrumWidget();
-                    it->spectrum = sw;
-                }
-            }
-            if (!pan || !sw)
-                return;
-            if (profileLoadRadioStateWritesHeld()) {
-                qCDebug(lcProtocol).noquote().nospace()
-                    << "MainWindow: wf line_duration timer suppressed for profile load pan=" << panId;
-                return;
-            }
-
-            const QString wfId = pan->waterfallId();
-            const int reported = pan->waterfallLineDuration();
-            const int desired = sw->wfLineDuration();
-            if (wfId.isEmpty() || reported <= 0 || desired <= 0 || reported == desired)
-                return;
-
-            constexpr qint64 kCooldownMs = 5000;
-            const qint64 now = QDateTime::currentMSecsSinceEpoch();
-            if (it->lastSentDesired == desired
-                && it->lastSentMs > 0
-                && now - it->lastSentMs < kCooldownMs) {
-                return;
-            }
-
-            qCDebug(lcProtocol).noquote().nospace()
-                << "MainWindow: reasserting waterfall rate pan=" << panId
-                << " waterfall=" << wfId
-                << " reported_line_duration=" << reported
-                << " desired_line_duration=" << desired;
-            m_radioModel.sendCommand(
-                QString("display panafall set %1 line_duration=%2").arg(wfId).arg(desired));
-            it->lastSentMs = now;
-            it->lastSentDesired = desired;
-        });
-    }
-
-    state.timer->start();
-}
-
-// Per-pan FPS / waterfall-line-duration reconcilers. Wired from
-// wirePanadapter() for fresh pans and from the panadapterReclaimed handler
-// for previous-session pans reclaimed on reconnect — the disconnect path
-// explicitly tears these connections down, and reclaimed pans never re-emit
-// panadapterAdded, so they need this re-wire to keep reconciling.
-void MainWindow::wirePanReconcilers(PanadapterApplet* applet, PanadapterModel* pan)
-{
-    auto* sw = applet->spectrumWidget();
-    if (!sw || !pan)
-        return;
-
-    auto oldFpsConnection = m_panFpsReconcileConnections.take(applet->panId());
-    if (oldFpsConnection)
-        QObject::disconnect(oldFpsConnection);
-
-    auto& fpsState = m_panFpsReconcile[applet->panId()];
-    fpsState.spectrum = sw;
-    m_panFpsReconcileConnections.insert(
-        applet->panId(),
-        connect(pan, &PanadapterModel::fpsReported,
-                this, [this, panId = applet->panId()](int fps) {
-            schedulePanFpsReconcile(panId, fps);
-        }));
-    schedulePanFpsReconcile(applet->panId(), pan->fps());
-
-    auto oldWfLineDurationConnection =
-        m_wfLineDurationReconcileConnections.take(applet->panId());
-    if (oldWfLineDurationConnection)
-        QObject::disconnect(oldWfLineDurationConnection);
-
-    auto& wfLineDurationState = m_wfLineDurationReconcile[applet->panId()];
-    wfLineDurationState.spectrum = sw;
-    m_wfLineDurationReconcileConnections.insert(
-        applet->panId(),
-        connect(pan, &PanadapterModel::waterfallLineDurationReported,
-                this, [this, panId = applet->panId()](int ms) {
-            scheduleWaterfallLineDurationReconcile(panId, ms);
-        }));
-    scheduleWaterfallLineDurationReconcile(applet->panId(),
-                                           pan->waterfallLineDuration());
-
-    auto oldAverageConnection =
-        m_panAverageReconcileConnections.take(applet->panId());
-    if (oldAverageConnection)
-        QObject::disconnect(oldAverageConnection);
-
-    auto& averageState = m_panAverageReconcile[applet->panId()];
-    averageState.spectrum = sw;
-    m_panAverageReconcileConnections.insert(
-        applet->panId(),
-        connect(pan, &PanadapterModel::averageReported,
-                this, [this, panId = applet->panId()](int average) {
-            schedulePanAverageReconcile(panId, average);
-        }));
-    schedulePanAverageReconcile(applet->panId(), pan->average());
-
-    auto oldWeightedAvgConnection =
-        m_panWeightedAvgReconcileConnections.take(applet->panId());
-    if (oldWeightedAvgConnection)
-        QObject::disconnect(oldWeightedAvgConnection);
-
-    auto& weightedAvgState = m_panWeightedAvgReconcile[applet->panId()];
-    weightedAvgState.spectrum = sw;
-    m_panWeightedAvgReconcileConnections.insert(
-        applet->panId(),
-        connect(pan, &PanadapterModel::weightedAverageReported,
-                this, [this, panId = applet->panId()](bool weighted) {
-            schedulePanWeightedAvgReconcile(panId, weighted);
-        }));
-    schedulePanWeightedAvgReconcile(applet->panId(), pan->weightedAverage());
 }
 
 // wirePanadapter() / revealFrequencyIfNeeded() / panFollowVfo() / wireVfoWidget() lives in MainWindow_Wiring.cpp (#3351 Phase 1d).
@@ -7901,46 +7407,58 @@ void MainWindow::showPanadapterInterlockNotification(const QString& message,
 
 // ─── Keyboard Shortcuts ───────────────────────────────────────────────────────
 
-void MainWindow::updateKeyerAvailability(const QString& mode)
+void MainWindow::updateKeyerAvailability()
 {
     static const QString kActive   = "QLabel { color: #00b4d8; font-weight: bold; font-size: 24px; }";
     static const QString kAvail    = "QLabel { color: #404858; font-weight: bold; font-size: 24px; }";
     static const QString kDisabled = "QLabel { color: #252530; font-weight: bold; font-size: 24px; }";
 
-    bool isCw  = (mode == "CW" || mode == "CWL");
-    bool isSsb = (mode == "USB" || mode == "LSB" || mode == "AM" || mode == "SAM"
-                  || mode == "FM" || mode == "NFM" || mode == "DFM");
+    // CWX and DVK both key the radio's TX slice, so their availability and
+    // F1-F12 shortcuts follow that slice — not the selected RX slice.  FlexLib
+    // scopes CWX to the TX slice (reference/FlexLib_API_v4.1.5.39794/FlexLib/
+    // CWX.cs:186-199 getTXFrequency() returns the IsTransmitSlice's Freq).
+    // Driving both keyers from the *same* slice's mode keeps the two F1-F12
+    // sets mutually exclusive (CW vs voice can't both be true), so Qt never
+    // sees two enabled ApplicationShortcuts per key and won't emit
+    // activatedAmbiguously (#2464, #2582, #4173).
+    SliceModel* txSlice = m_radioModel.txSlice();
+    const QString txMode = txSlice ? txSlice->mode() : QString();
+    const bool txIsCw  = (txMode == "CW" || txMode == "CWL");
+    const bool txIsSsb = (txMode == "USB" || txMode == "LSB"
+                          || txMode == "AM" || txMode == "SAM"
+                          || txMode == "FM" || txMode == "NFM"
+                          || txMode == "DFM");
 
-    // F1-F12 / Esc ApplicationShortcuts: enable the set that matches the
-    // active slice's mode, regardless of panel visibility.  The two sets
-    // are mutually exclusive so Qt never sees two enabled shortcuts for
-    // the same key and won't emit activatedAmbiguously (#2464, #2582).
-    if (m_cwxPanel) m_cwxPanel->setShortcutsEnabled(isCw);
-    if (m_dvkPanel) m_dvkPanel->setShortcutsEnabled(isSsb);
+    if (m_cwxPanel) m_cwxPanel->setShortcutsEnabled(txIsCw);
+    if (m_dvkPanel) m_dvkPanel->setShortcutsEnabled(txIsSsb);
 
-    // CWX: available in CW modes only
-    m_cwxIndicator->setEnabled(isCw);
-    if (!isCw && m_cwxPanel->isVisible()) {
+    // Only auto-hide an open panel when a TX slice *exists* and is in the wrong
+    // mode (a deliberate mode change).  A momentary "no TX slice" — during a TX
+    // handoff between slices, or a band-recall that drops+recreates the TX slice
+    // — must not yank an open panel the user can't get back (updateKeyer only
+    // hides; showing is user-driven) (#4173).
+    m_cwxIndicator->setEnabled(txIsCw);
+    if (txSlice && !txIsCw && m_cwxPanel->isVisible()) {
         m_cwxPanel->hide();
         m_cwxIndicator->setStyleSheet(kDisabled);
     } else if (m_cwxPanel->isVisible()) {
         m_cwxIndicator->setStyleSheet(kActive);
     } else {
-        m_cwxIndicator->setStyleSheet(isCw ? kAvail : kDisabled);
+        m_cwxIndicator->setStyleSheet(txIsCw ? kAvail : kDisabled);
     }
-    m_cwxIndicator->setCursor(isCw ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    m_cwxIndicator->setCursor(txIsCw ? Qt::PointingHandCursor : Qt::ArrowCursor);
 
     // DVK: available in voice modes (SSB, AM, FM — not DIGU/DIGL)
-    m_dvkIndicator->setEnabled(isSsb);
-    if (!isSsb && m_dvkPanel->isVisible()) {
+    m_dvkIndicator->setEnabled(txIsSsb);
+    if (txSlice && !txIsSsb && m_dvkPanel->isVisible()) {
         m_dvkPanel->hide();
         m_dvkIndicator->setStyleSheet(kDisabled);
     } else if (m_dvkPanel->isVisible()) {
         m_dvkIndicator->setStyleSheet(kActive);
     } else {
-        m_dvkIndicator->setStyleSheet(isSsb ? kAvail : kDisabled);
+        m_dvkIndicator->setStyleSheet(txIsSsb ? kAvail : kDisabled);
     }
-    m_dvkIndicator->setCursor(isSsb ? Qt::PointingHandCursor : Qt::ArrowCursor);
+    m_dvkIndicator->setCursor(txIsSsb ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
 
 void MainWindow::centerActiveSliceInPanadapter(bool forceRadioCenter, double centerMhz)
