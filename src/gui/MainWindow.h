@@ -126,6 +126,7 @@ class DxClusterDialog;
 class CallsignLookupDialog;
 class Ax25HfPacketDecodeDialog;
 class PskReporterMapDialog;
+class GpsLocationDialog;
 class FlexControlDialog;
 class MidiMappingDialog;
 #ifdef HAVE_HIDAPI
@@ -230,6 +231,9 @@ public:
     // Persist the TX-via-MCP opt-in and push it live (Radio Setup → Network).
     // Enabling arms the force-unkey watchdog; disabling force-unkeys the radio.
     void setAutomationTxAllowed(bool allowed);
+    // Persist the observe-only opt-in and push it live (Radio Setup → Network).
+    // When set, the bridge refuses every mutating verb (#4188 area 6).
+    void setAutomationReadOnly(bool readOnly);
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -486,6 +490,7 @@ private:
     void wireCallsignLookup();
     void onCwCallsignSpotted(const QString& call);
     void showCallsignLookupDialog(const QString& call = QString());
+    void showGpsLocationDialog();
     void routeRttyDecoderOutput();
     void refreshRttyDecodeState();
     SpectrumWidget* spectrumForSlice(SliceModel* s) const;
@@ -1015,6 +1020,7 @@ private:
     QSystemTrayIcon* m_trayIcon{nullptr};
     QPointer<Ax25HfPacketDecodeDialog> m_ax25HfPacketDecodeDialog;
     QPointer<PskReporterMapDialog> m_pskReporterMapDialog;
+    QPointer<GpsLocationDialog> m_gpsLocationDialog;
     QPointer<FlexControlDialog> m_flexControlDialog;
     QPointer<WhatsNewDialog> m_whatsNewDialog;
     QPointer<AetherDspDialog> m_dspDialog;
