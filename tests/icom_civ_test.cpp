@@ -316,6 +316,45 @@ static void testCommands()
           "out-of-range reference clamps to +20.0 rather than wrapping");
 }
 
+// commandHasSubcommand() is the ONE list of which commands are sub-addressed.
+// parseFrame() decodes by it and the CI-V trace labels by it, so the property
+// that matters is that the predicate and the parser cannot disagree — a drift
+// between them is what produces a confidently mislabelled frame.
+//
+// Asserting the predicate against a hand-written list would just be a third
+// copy. So this drives every one of the 256 command values through parseFrame()
+// and checks the parser's own hasSub against the predicate.
+static void testSubcommandPredicate()
+{
+    int subAddressed = 0;
+    for (int c = 0; c <= 0xFF; ++c) {
+        const auto command = static_cast<std::uint8_t>(c);
+        // Two payload bytes, so there is something for either reading to claim:
+        // if the command is sub-addressed the first is the subcommand, and if
+        // it is not, both are data.
+        const std::vector<std::uint8_t> wire{
+            0xFE, 0xFE, kControllerAddress, kIc705, command, 0x01, 0x02, kCivEom};
+        const auto parsed = parseFrame(wire);
+        if (!parsed)
+            continue;
+        const bool predicate = commandHasSubcommand(command);
+        check(parsed->hasSub == predicate,
+              "parseFrame and commandHasSubcommand agree for every command byte");
+        if (predicate) {
+            ++subAddressed;
+            check(parsed->sub == 0x01 && parsed->data.size() == 1,
+                  "a sub-addressed command takes the subcommand out of the payload");
+        } else {
+            check(parsed->data.size() == 2,
+                  "a bare command keeps both payload bytes");
+        }
+    }
+    // The nine that carry subcommands: 14 15 16 18 19 1A 1C 21 27. A change to
+    // the list is a deliberate protocol decision, so it should have to come
+    // past this number rather than arrive as a silent side effect.
+    check(subAddressed == 9, "exactly nine CI-V commands are sub-addressed");
+}
+
 int main()
 {
     testFraming();
@@ -323,6 +362,7 @@ int main()
     testReassembler();
     testModes();
     testCommands();
+    testSubcommandPredicate();
 
     if (g_failures == 0)
         std::printf("icom_civ_test: all checks passed\n");
