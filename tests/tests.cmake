@@ -421,6 +421,24 @@ add_executable(icom_tx_packetiser_drop_test
 target_include_directories(icom_tx_packetiser_drop_test PRIVATE src)
 add_test(NAME icom_tx_packetiser_drop_test COMMAND icom_tx_packetiser_drop_test)
 
+# Does the Icom transmit path survive 1200-baud AFSK end to end?  Walks a
+# real AX.25 burst through the 24k->48k resample, the LPCM encode and the
+# TX packetiser, asserting the AFSK tones and frame count survive each
+# stage.  No radio, no sockets: the whole chain runs in-process, so this
+# pins the client-side behaviour that #5011's investigation established is
+# clean and should not have to be re-measured by hand.
+add_executable(icom_tx_resample_ax25_test
+    tests/icom_tx_resample_ax25_test.cpp
+    src/core/Resampler.cpp
+    src/core/backends/icom/IcomAudio.cpp
+)
+target_include_directories(icom_tx_resample_ax25_test PRIVATE
+    src
+    ${CMAKE_SOURCE_DIR}/third_party/r8brain
+)
+target_link_libraries(icom_tx_resample_ax25_test PRIVATE Qt6::Core)
+add_test(NAME icom_tx_resample_ax25_test COMMAND icom_tx_resample_ax25_test)
+
 add_executable(icom_civ_scheduler_test
     tests/icom_civ_scheduler_test.cpp
     src/core/backends/icom/IcomCivScheduler.cpp
