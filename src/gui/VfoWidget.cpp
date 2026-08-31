@@ -391,6 +391,13 @@ private:
 
 namespace AetherSDR {
 
+// SPIKE (dual-receiver flag): both frequency rows share one size, so neither
+// receiver is implied to be the more important one.  17 px is what the second
+// row was drawn at while the primary was 26 px; matching DOWN keeps the flag
+// from growing into the panadapter.  The stack width is measured against
+// "0000.000.000" at this size so a 23 cm reading fits.
+constexpr int kRxRowFontPx = 17;
+
 static bool isFmRfMode(const QString& mode)
 {
     return mode == "FM" || mode == "NFM" || mode == "DFM"
@@ -993,10 +1000,13 @@ void VfoWidget::buildUI()
     AetherSDR::ThemeManager::instance().applyStyleSheet(m_freqLabel, "QLabel { background: transparent;"
                                 " border: 1px solid rgba(255,255,255,80);"
                                 " border-radius: 3px;"
-                                " color: {{color.text.primary}}; font-size: {{font.size.freq}}px; font-weight: bold;"
+                                " color: {{color.text.primary}}; font-size: 17px; font-weight: bold;"
                                 " font-family: \"{{font.family.freq}}\";"
-                                " padding: 0 0 0 2px; }");
-    m_freqLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                                " padding: 0 0 0 4px; }");
+    // SPIKE: left-justified.  Right-alignment makes the MHz digit jump
+    // horizontally as the reading crosses 100/1000 MHz, so on a tri-bander the
+    // decimal point never sits still.  Left-aligning pins the leading digit.
+    m_freqLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_freqLabel->installEventFilter(this);
     m_freqStack->addWidget(m_freqLabel);
 
@@ -1008,10 +1018,24 @@ void VfoWidget::buildUI()
         " font-weight: bold; padding: 0 2px 0 0; }");
     m_freqEdit->setAlignment(Qt::AlignRight);
     // Size to fit "0000.000.000" at the label font size (4-digit MHz for XVTR/SHF)
-    QFont labelFont;
-    labelFont.setPixelSize(26);
+    //
+    // SPIKE: sized at the SECOND-receiver font (17 px), not the historical
+    // 26 px, so both rows are the same size — a dual-receiver flag should not
+    // imply one receiver matters more by drawing it larger.  Still measured
+    // against the 4-digit "0000.000.000" so 23 cm (1296.000.000) fits without
+    // clipping, which is the case a 2 m/70 cm bench never exercises.
+    //
+    // ⚠ Measure with the label's OWN font, not a default-constructed QFont.
+    // font.family.freq is a seven-segment face whose digits are materially
+    // wider than the default UI font at the same pixel size, so measuring a
+    // bare QFont under-sizes the box and the last digits clip off the right —
+    // which is exactly what the first spike run did.  Same lesson as the
+    // Ulanzi 212 px status row (#3485): measure the real thing.
+    m_freqLabel->ensurePolished();
+    QFont labelFont = m_freqLabel->font();
+    labelFont.setPixelSize(kRxRowFontPx);
     labelFont.setBold(true);
-    const int stackW = QFontMetrics(labelFont).horizontalAdvance("0000.000.000") + 8;
+    const int stackW = QFontMetrics(labelFont).horizontalAdvance("0000.000.000") + 16;
     m_freqStack->setFixedWidth(stackW);
     freqEdit->setHintText("MHz (e.g. 14.225)");
     m_freqEdit->installEventFilter(this);
@@ -1085,8 +1109,101 @@ void VfoWidget::buildUI()
         freqRow->addWidget(m_radeStatusLabel);
 #endif
         freqRow->addStretch(1);
+
         freqRow->addWidget(m_freqStack);
+
+        // SPIKE: VFO letter over memory channel, to the RIGHT of the readout —
+        // where the radio itself puts it (the 9700 shows "VFO A" with the
+        // memory slot beneath, right of the frequency).  Built always but
+        // hidden until setSecondReceiver() fills it, so a single-receiver flag
+        // keeps its existing geometry exactly.
+        m_rx1Ident = new QWidget;
+        {
+            auto* col = new QVBoxLayout(m_rx1Ident);
+            col->setContentsMargins(4, 0, 0, 0);
+            col->setSpacing(0);
+            m_rx1Vfo = new QLabel;
+            AetherSDR::ThemeManager::instance().applyStyleSheet(m_rx1Vfo,
+                "QLabel { color: {{color.accent}}; font-size: 11px; font-weight: bold;"
+                " background: transparent; border: none; padding: 0; margin: 0; }");
+            m_rx1Vfo->setAlignment(Qt::AlignLeft | Qt::AlignBottom);
+            m_rx1Chan = new QLabel;
+            AetherSDR::ThemeManager::instance().applyStyleSheet(m_rx1Chan,
+                "QLabel { color: {{color.text.label}}; font-size: 9px; font-weight: bold;"
+                " background: transparent; border: none; padding: 0; margin: 0; }");
+            // Centred under the VFO line above it, so the ident column has a
+            // single axis instead of two ragged left edges.
+            m_rx1Chan->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+            col->addWidget(m_rx1Vfo);
+            col->addWidget(m_rx1Chan);
+        }
+        m_rx1Ident->hide();
+        freqRow->addWidget(m_rx1Ident);
         root->addLayout(freqRow);
+    }
+
+    // ── SPIKE: second-receiver row, hidden unless setSecondReceiver() runs ──
+    //
+    // Sits directly under the primary readout so the two frequencies read as a
+    // pair.  Built unconditionally but hidden, so a radio with one receiver
+    // renders EXACTLY as before — no layout shift, no reserved space (a hidden
+    // QWidget in a QVBoxLayout contributes no height).
+    //
+    // The tag column is left-aligned against right-aligned digits, mirroring
+    // the primary row's alignment so the digit columns line up vertically.
+    {
+        m_rx2Row = new QWidget;
+        auto* rx2 = new QHBoxLayout(m_rx2Row);
+        rx2->setContentsMargins(0, 0, 0, 0);
+        rx2->setSpacing(4);
+
+        rx2->addStretch(1);
+
+        // Same size as the primary row — see kRxRowFontPx.  Left-justified for
+        // the same reason: the leading digit must not move when the reading
+        // crosses 100 or 1000 MHz.
+        m_rx2Label = new QLabel;
+        AetherSDR::ThemeManager::instance().applyStyleSheet(m_rx2Label,
+            "QLabel { background: transparent;"
+            " border: 1px solid rgba(255,255,255,45);"
+            " border-radius: 3px;"
+            " color: {{color.text.secondary}}; font-size: 17px; font-weight: bold;"
+            " font-family: \"{{font.family.freq}}\";"
+            " padding: 0 0 0 4px; }");
+        m_rx2Label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        // Take the COMPUTED width, not m_freqStack->width(): this runs during
+        // construction, before any layout pass, so the stack still reports
+        // Qt's default 100 px.  Reading it there sized this label wrongly and
+        // made the digits render with a gap mid-number.
+        m_rx2Label->setFixedWidth(m_freqStack->minimumWidth() > 0
+                                      ? m_freqStack->minimumWidth()
+                                      : m_freqStack->maximumWidth());
+        rx2->addWidget(m_rx2Label);
+
+        // Ident column mirrors the primary row's, on the RIGHT, so the two
+        // VFO/channel stacks line up vertically with each other.
+        m_rx2Tag = new QLabel;      // the VFO letter
+        AetherSDR::ThemeManager::instance().applyStyleSheet(m_rx2Tag,
+            "QLabel { color: {{color.text.secondary}}; font-size: 11px; font-weight: bold;"
+            " background: transparent; border: none; padding: 0; margin: 0; }");
+        m_rx2Tag->setAlignment(Qt::AlignLeft | Qt::AlignBottom);
+        m_rx2Chan = new QLabel;     // the memory channel beneath it
+        AetherSDR::ThemeManager::instance().applyStyleSheet(m_rx2Chan,
+            "QLabel { color: {{color.text.label}}; font-size: 9px; font-weight: bold;"
+            " background: transparent; border: none; padding: 0; margin: 0; }");
+        m_rx2Chan->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+        {
+            auto* col = new QWidget;
+            auto* cl = new QVBoxLayout(col);
+            cl->setContentsMargins(4, 0, 0, 0);
+            cl->setSpacing(0);
+            cl->addWidget(m_rx2Tag);
+            cl->addWidget(m_rx2Chan);
+            rx2->addWidget(col);
+        }
+
+        m_rx2Row->hide();
+        root->addWidget(m_rx2Row);
     }
 
 #ifdef HAVE_RADE
@@ -5179,6 +5296,123 @@ void VfoWidget::syncFromSlice()
     }
 
     m_updatingFromModel = false;
+}
+
+// ── SPIKE: second-receiver readout ───────────────────────────────────────
+//
+// Formats and shows the other receiver's frequency beneath the primary one.
+// Deliberately takes a value rather than reading m_slice: there is no second
+// slice to read.  IcomCivBackend models ONE receiver (sliceId() and panId()
+// are hardcoded 0) and decodes only the selected VFO, so the unselected one
+// reaches the app through no path today.  Wiring that up is #4840.
+void VfoWidget::setSecondReceiver(double freqMhz,
+                                  const QString& primaryName,
+                                  const QString& secondName,
+                                  const QString& primaryRole,
+                                  const QString& secondRole)
+{
+    if (!m_rx2Row || !m_rx2Label || !m_rx2Tag)
+        return;
+
+    if (freqMhz < 0.0) {
+        // Restore the single-receiver flag exactly as it was.
+        m_rx2Visible = false;
+        m_rx2Row->hide();
+        if (m_rx1Ident)
+            m_rx1Ident->hide();
+        return;
+    }
+
+    // Same MHz.kHz.Hz grouping as updateFreqLabel(), so the two rows read
+    // identically.  The kHz and Hz groups are ALWAYS three digits (zero-padded)
+    // — dropping the padding is what turned 435.810000 into "435.8 10000" on
+    // the first spike run, because the groups then ran together.
+    const long long hz = static_cast<long long>(std::llround(freqMhz * 1e6));
+    const QString text = QStringLiteral("%1.%2.%3")
+        .arg(static_cast<int>(hz / 1000000))
+        .arg(static_cast<int>((hz / 1000) % 1000), 3, 10, QChar('0'))
+        .arg(static_cast<int>(hz % 1000), 3, 10, QChar('0'));
+    m_rx2Label->setText(text);
+
+    // Identity beside each readout: VFO letter, channel number beneath.
+    // Names arrive as "MAIN"/"SUB"; the letter is what the radio shows.
+    const auto vfoLetter = [](const QString& name) {
+        return name.compare(QLatin1String("SUB"), Qt::CaseInsensitive) == 0
+                   ? QStringLiteral("VFO B") : QStringLiteral("VFO A");
+    };
+    if (m_rx1Vfo)  m_rx1Vfo->setText(vfoLetter(primaryName));
+    if (m_rx2Tag)  m_rx2Tag->setText(vfoLetter(secondName));
+
+    // Memory channel: the number alone, emboldened — "CH" is a label the
+    // operator does not need twice, and the number is the thing being read.
+    //
+    // Colour carries WHICH RECEIVER IS ACTIVE: white on the receiver the
+    // operator is working, dim on the other.  That is the same distinction the
+    // frequency rows already make through their own text colour, so the whole
+    // right-hand column reads as one active/inactive pair rather than two
+    // unrelated cues.  Centred under the VFO line so the column has an axis.
+    //
+    // ⚠ STUB.  #5283's IC-9700 memory integration is read-only and publishes
+    // no per-receiver channel number, so the digits below are invented and the
+    // active receiver is assumed to be the primary row.  Which receiver is
+    // selected IS derivable once a second receiver is modelled (unlike a
+    // VFO-vs-memory mode flag, which nothing in SliceModel or RadioModel
+    // exposes at all).  Sourcing both is #4840.
+    const auto styleChan = [](QLabel* lbl, bool active) {
+        const QByteArray sheet =
+            QStringLiteral("QLabel { color: %1; font-size: 10px; font-weight: bold;"
+                           " background: transparent; border: none; padding: 0; margin: 0; }")
+                .arg(active ? QStringLiteral("{{color.text.primary}}")
+                            : QStringLiteral("{{color.text.label}}"))
+                .toUtf8();
+        AetherSDR::ThemeManager::instance().applyStyleSheet(lbl, sheet.constData());
+    };
+    if (m_rx1Chan) { styleChan(m_rx1Chan, true);  m_rx1Chan->setText(QStringLiteral("01")); }
+    if (m_rx2Chan) { styleChan(m_rx2Chan, false); m_rx2Chan->setText(QStringLiteral("02")); }
+
+    // ── Which row is transmitting, and which one the meter belongs to ──────
+    //
+    // The S-meter is shared and sits below both rows, so without a marker it
+    // visibly belongs to neither — on a satellite pass the operator cannot
+    // tell which frequency the needle is reading.  The RX row is tinted with
+    // the accent and the TX row with the warning colour, which also matches
+    // the header's existing red/amber TX language.
+    const auto roleColour = [](const QString& role) -> const char* {
+        if (role.compare(QLatin1String("tx"), Qt::CaseInsensitive) == 0)
+            return "{{color.accent.warning}}";
+        if (role.compare(QLatin1String("rx"), Qt::CaseInsensitive) == 0)
+            return "{{color.accent}}";
+        return "{{color.text.secondary}}";
+    };
+    // Hold the sheet in a named QByteArray: .toUtf8() on a temporary QString
+    // would dangle the moment constData() returned.
+    const auto styleRole = [](QLabel* lbl, const char* colourToken) {
+        const QByteArray sheet =
+            QStringLiteral("QLabel { color: %1; font-size: 11px; font-weight: bold;"
+                           " background: transparent; border: none; padding: 0; margin: 0; }")
+                .arg(QLatin1String(colourToken)).toUtf8();
+        AetherSDR::ThemeManager::instance().applyStyleSheet(lbl, sheet.constData());
+    };
+    if (m_rx1Vfo && !primaryRole.isEmpty()) {
+        styleRole(m_rx1Vfo, roleColour(primaryRole));
+        m_rx1Vfo->setText(QStringLiteral("%1  %2")
+                              .arg(vfoLetter(primaryName), primaryRole.toUpper()));
+    }
+    if (m_rx2Tag && !secondRole.isEmpty()) {
+        styleRole(m_rx2Tag, roleColour(secondRole));
+        m_rx2Tag->setText(QStringLiteral("%1  %2")
+                              .arg(vfoLetter(secondName), secondRole.toUpper()));
+    }
+
+    const auto withRole = [](const QString& name, const QString& role) {
+        return role.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, role);
+    };
+    if (m_freqLabel) m_freqLabel->setToolTip(withRole(primaryName, primaryRole));
+    m_rx2Label->setToolTip(withRole(secondName, secondRole));
+
+    m_rx2Visible = true;
+    if (m_rx1Ident) m_rx1Ident->show();
+    m_rx2Row->show();
 }
 
 void VfoWidget::updateFreqLabel()

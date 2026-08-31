@@ -274,6 +274,20 @@ public:
     void beginDirectEntry(QString source = QStringLiteral("vfo-direct-entry"));
     QLabel* freqLabel() const { return m_freqLabel; }
 
+    // ── SPIKE: show/hide the second-receiver row ──────────────────────────
+    // freqMhz < 0 hides the row and restores today's single-receiver flag,
+    // which is what every radio without a second receiver must keep rendering.
+    // `primaryRole` / `secondRole` are short tags ("tx" / "rx") or empty.
+    // See the m_rx2Row comment for why this takes values instead of reading a
+    // backend: nothing publishes the unselected VFO yet.
+    void setSecondReceiver(double freqMhz,
+                           const QString& primaryName = QStringLiteral("MAIN"),
+                           const QString& secondName  = QStringLiteral("SUB"),
+                           const QString& primaryRole = QString(),
+                           const QString& secondRole  = QString());
+    bool hasSecondReceiver() const { return m_rx2Visible; }
+    QLabel* secondReceiverLabel() const { return m_rx2Label; }
+
     bool isCollapsed() const { return m_collapsed; }
     void setCollapsed(bool collapsed);
 
@@ -466,6 +480,27 @@ private:
     QLineEdit* m_freqEdit{nullptr};
     QStackedWidget* m_freqStack{nullptr};
     QLabel* m_dbmLabel{nullptr};
+
+    // ── SPIKE: second receiver readout (see setSecondReceiver) ────────────
+    // A radio with two receivers and ONE scope stream (IC-9700: two receivers,
+    // a single 0x27 0x00 scope) has nowhere to show its second receiver — a
+    // second panadapter would have no stream to fill.  These carry it inside
+    // the existing flag instead: the primary row keeps m_freqLabel, and this
+    // row is the other receiver.
+    //
+    // ⚠ NOT WIRED TO A BACKEND.  IcomCivBackend reads the SELECTED VFO only
+    // (IcomCivBackend.cpp:2437) and never polls CI-V 0x25 for the unselected
+    // one, so nothing can populate this from a real radio yet.  It is driven
+    // here by setSecondReceiver() from a stub so the LAYOUT can be measured in
+    // the real widget.  Sourcing the data is #4840's scope.
+    QWidget* m_rx2Row{nullptr};      // whole second-receiver row (hidden by default)
+    QLabel*  m_rx2Label{nullptr};    // the frequency digits
+    QLabel*  m_rx2Tag{nullptr};      // second row's VFO letter
+    QLabel*  m_rx2Chan{nullptr};     // second row's channel number
+    QWidget* m_rx1Ident{nullptr};    // primary row's VFO/channel column
+    QLabel*  m_rx1Vfo{nullptr};
+    QLabel*  m_rx1Chan{nullptr};
+    bool     m_rx2Visible{false};
     // Meter strip: page 0 = standard S-meter (painted bar + dBm label),
     // page 1 = SmartMTR component.  m_smartMtr mirrors the current page.
     QStackedWidget* m_meterStack{nullptr};

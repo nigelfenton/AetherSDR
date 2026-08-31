@@ -767,6 +767,17 @@ target_include_directories(vfo_flag_placement_test PRIVATE src)
 target_link_libraries(vfo_flag_placement_test PRIVATE Qt6::Widgets)
 add_test(NAME vfo_flag_placement_test COMMAND vfo_flag_placement_test)
 
+# SPIKE harness for the dual-receiver flag layout.  Builds real VfoWidgets and
+# measures them, because a mockup cannot tell you whether text fits (#3485).
+# Deliberately NOT registered with add_test(): it renders a PNG and is a design
+# aid, not a regression gate.
+#   cmake --build build --target vfo_dual_receiver_spike
+add_executable(vfo_dual_receiver_spike EXCLUDE_FROM_ALL
+    tests/vfo_dual_receiver_spike.cpp
+)
+target_include_directories(vfo_dual_receiver_spike PRIVATE src)
+target_link_libraries(vfo_dual_receiver_spike PRIVATE aethercore Qt6::Widgets)
+
 add_executable(slice_tone_cues_test
     tests/slice_tone_cues_test.cpp
 )

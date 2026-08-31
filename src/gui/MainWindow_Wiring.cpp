@@ -5924,6 +5924,27 @@ void MainWindow::wireVfoWidget(VfoWidget* w, SliceModel* s)
     w->setSlice(s);
     w->setAntennaList(m_radioModel.antennaList());
     w->setTransmitModel(&m_radioModel.transmitModel());
+
+    // ── SPIKE: dual-receiver flag layout, opt-in via env var ──────────────
+    //
+    // AETHER_SPIKE_DUAL_VFO=<MHz> shows the second-receiver row with that
+    // frequency, so the layout can be looked at in the real app.
+    //
+    // ⚠ THE VALUE IS A STUB, NOT THE RADIO.  IcomCivBackend decodes the
+    // SELECTED VFO only (IcomCivBackend.cpp:2437) and never polls CI-V 0x25
+    // for the unselected one, so no backend can populate this today; sourcing
+    // it is #4840.  Env-gated and default-off precisely so this cannot be
+    // mistaken for a working feature — with the variable unset, every flag
+    // renders exactly as it does on main.
+    if (const QByteArray spike = qgetenv("AETHER_SPIKE_DUAL_VFO"); !spike.isEmpty()) {
+        bool ok = false;
+        const double mhz = spike.toDouble(&ok);
+        if (ok && mhz > 0.0) {
+            w->setSecondReceiver(mhz,
+                                 QStringLiteral("MAIN"), QStringLiteral("SUB"),
+                                 QStringLiteral("tx"),   QStringLiteral("rx"));
+        }
+    }
 }
 
 // wireActiveVfoSignals removed — NR2/RN2/RADE are now wired permanently
