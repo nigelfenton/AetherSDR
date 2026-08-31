@@ -3178,6 +3178,15 @@ target_include_directories(icom_family_test PRIVATE src)
 target_link_libraries(icom_family_test PRIVATE aethercore Qt6::Core Qt6::Test)
 add_test(NAME icom_family_test COMMAND icom_family_test)
 
+# Does the advertised panadapter capacity match what the backend can deliver?
+# capabilities() derives maxPanadapters from the model's receiver count, but
+# createPanadapter() is not overridden — so the IC-9700 advertises 2 and can
+# produce 1.  Local verification aid, not for upstream as-is.
+add_executable(icom_panadapter_capacity_test tests/icom_panadapter_capacity_test.cpp)
+target_include_directories(icom_panadapter_capacity_test PRIVATE src)
+target_link_libraries(icom_panadapter_capacity_test PRIVATE aethercore Qt6::Core Qt6::Test)
+add_test(NAME icom_panadapter_capacity_test COMMAND icom_panadapter_capacity_test)
+
 add_executable(hl2_family_transition_test tests/hl2_family_transition_test.cpp)
 target_include_directories(hl2_family_transition_test PRIVATE src)
 target_link_libraries(hl2_family_transition_test PRIVATE aethercore Qt6::Core Qt6::Test)
