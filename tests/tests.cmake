@@ -532,6 +532,16 @@ add_executable(icom_live_civ_probe EXCLUDE_FROM_ALL tests/icom_live_civ_probe.cp
 target_include_directories(icom_live_civ_probe PRIVATE src)
 target_link_libraries(icom_live_civ_probe PRIVATE aethercore Qt6::Core Qt6::Network)
 
+# IcomCIV sub-VFO probe — REQUIRES A REAL RADIO, so EXCLUDE_FROM_ALL and not
+# registered with add_test().  Answers, on hardware, whether CI-V 0x25 can read
+# the UNSELECTED VFO and what polling it costs — the open question under #5348,
+# and the one that decides whether that RFC's data path is viable at all.
+# RX-only: 0x25 READ frames, never a write, never a key.
+#   cmake --build build --target icom_live_subvfo_probe
+add_executable(icom_live_subvfo_probe EXCLUDE_FROM_ALL tests/icom_live_subvfo_probe.cpp)
+target_include_directories(icom_live_subvfo_probe PRIVATE src)
+target_link_libraries(icom_live_subvfo_probe PRIVATE aethercore Qt6::Core Qt6::Network)
+
 # HL2 live band-filter probe — REQUIRES REAL HARDWARE, so deliberately NOT
 # registered with add_test(). Build it and run it by hand against a radio:
 #   cmake --build build --target hl2_live_band_filter_probe
