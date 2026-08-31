@@ -91,6 +91,15 @@ namespace {
 // CI-V 0x25: read the frequency of the selected (00) or unselected (01) VFO.
 // The READ form carries no payload — a data byte would make it a WRITE, which
 // this probe must never send.
+//
+// ⚠ MEASURED 2026-08-31, AND IT IS NOT WHAT #5348 ASSUMED.  On an IC-9700,
+// 0x25 01 returns the other VFO **of the current receiver** — not the Sub
+// receiver.  Confirmed against the radio's own display: with Main on 145.070
+// and Sub on 435.825, `0x25 01` answered 146.520, which is what Main's VFO B
+// was showing.  The command works and decodes correctly; it addresses the
+// wrong axis.  Main/Sub is a RECEIVER selection (0x07 D0/D1), which is not
+// implemented anywhere in this tree — and being a *selection*, polling it
+// would repeatedly change which receiver is active under the operator.
 constexpr std::uint8_t kCmdVfoFreq   = 0x25;
 constexpr std::uint8_t kSubSelected   = 0x00;
 constexpr std::uint8_t kSubUnselected = 0x01;
@@ -260,6 +269,12 @@ int main(int argc, char** argv)
         std::snprintf(buf, sizeof buf, "0x25 01 -> %.6f MHz, %lld ms",
                       unsel.mhz, (long long)unsel.latencyMs);
         verdict("Q2 unselected VFO reports a frequency", true, buf);
+        std::printf("      ⚠ READ THIS AS VFO B OF THE CURRENT RECEIVER, not as Sub.\n"
+                    "        Verified 2026-08-31 against the radio's display: Main\n"
+                    "        145.070 / Sub 435.825 / Main-VFO-B 146.520, and this\n"
+                    "        command answered 146.520.  If the value below is not\n"
+                    "        what the SUB receiver shows, that is the expected\n"
+                    "        result and not a fault.\n");
         if (std::abs(unsel.mhz - sel.mhz) < 0.000002)
             std::printf("      ⚠ SAME as the selected VFO — either both are genuinely\n"
                         "        on one frequency, or 01 is being ignored and echoing\n"
