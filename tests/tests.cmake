@@ -2008,6 +2008,15 @@ target_include_directories(cw_mode_gate_test PRIVATE src)
 target_link_libraries(cw_mode_gate_test PRIVATE Qt6::Core)
 add_test(NAME cw_mode_gate_test COMMAND cw_mode_gate_test)
 
+# Socket-free, device-free: the wording a failed serial open shows the operator
+# (#6972). Needs Qt6::SerialPort only for the SerialPortError enum.
+if(TARGET Qt6::SerialPort)
+    add_executable(serial_open_failure_policy_test tests/serial_open_failure_policy_test.cpp)
+    target_include_directories(serial_open_failure_policy_test PRIVATE src)
+    target_link_libraries(serial_open_failure_policy_test PRIVATE Qt6::Core Qt6::SerialPort)
+    add_test(NAME serial_open_failure_policy_test COMMAND serial_open_failure_policy_test)
+endif()
+
 # Socket-free: CW practice sidetone through the production RadioModel key path
 # with no transmit-capable backend.
 add_executable(cw_practice_sidetone_test tests/cw_practice_sidetone_test.cpp)

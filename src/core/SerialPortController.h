@@ -96,6 +96,26 @@ signals:
     void txInputsCancelled();
     void errorOccurred(const QString& msg);
 
+    // The port's OBSERVED state, emitted on every open attempt and on close
+    // (#6972). errorOccurred() above says something went wrong but carries no
+    // state, so Radio Setup had nothing to show but the setting it had just
+    // saved — a failed open still read "Open". This carries the result itself.
+    //
+    // `path` is the device as it was attempted, so the message can name the
+    // full node rather than the short port name. On success `error` is
+    // QSerialPort::NoError (0), `native` is empty and `deviceGroup` is not read.
+    // `deviceGroup` is the node's owning group where the platform can report one
+    // (Unix) and empty elsewhere, so the remedy names the group the device
+    // actually uses instead of assuming dialout.
+    //
+    // `error` is an int, not QSerialPort::SerialPortError: <QSerialPort> is
+    // included here only for HAVE_SERIALPORT && !Q_OS_WIN, and a signal naming
+    // that type unconditionally would not compile on Windows. The receiver
+    // casts it back, and the Win32 path maps its own failures onto the same
+    // values so one classifier serves both.
+    void portStateChanged(bool open, const QString& path, int error,
+                          const QString& native, const QString& deviceGroup);
+
 private:
     friend class TxOperationIntegrationTestAccess;
     friend class SerialInputBaselineTestAccess;
@@ -113,6 +133,10 @@ private:
     bool m_pttInputHeld{false};
     bool m_keyInputHeld{false};
     bool m_paddleInputHeld{false};
+    // SerialAutoOpen is a STARTUP preference, so it applies to the first
+    // loadSettings() of a session and not to the reloads every later settings
+    // change triggers — otherwise Close is undone by the next reload (#6972).
+    bool m_settingsLoadedOnce{false};
     std::atomic<quint64> m_inputPortEpoch{0};
     void applyPin(PinFunction targetFn, bool active);
     void updatePolling();

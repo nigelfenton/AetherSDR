@@ -13,6 +13,8 @@
 #include "MidiTxDispatch.h"
 #include "MixerControlAvailability.h"
 #include "VoiceModeGate.h"   // isCwMode() — one CW-mode list, not thirteen
+#include "SerialOpenFailurePolicy.h"  // why a serial open failed, and the remedy (#6972)
+#include <QMessageBox>
 #include "SpectrumOverlayMenu.h"
 #include "core/AppSettings.h"
 #include "core/CwTrace.h"
@@ -2789,6 +2791,33 @@ void MainWindow::wireExternalControllers()
     fenceDeviceDisconnect(m_flexControl, &FlexControlManager::connectionChanged, this, flexController);
 
     // Serial port signals (auto-queued from worker → main)
+    //
+    // A failed open used to reach the operator as nothing but an aether.devices
+    // log line, while Radio Setup still read "Open" (#6972). This is the only
+    // receiver that can say so: the controller runs on the external-controller
+    // thread, and the connection above is auto-queued, so the dialog below is
+    // built on the GUI thread.
+    connect(m_serialPort, &SerialPortController::portStateChanged, this,
+            [this](bool open, const QString& path, int error, const QString& native,
+                   const QString& deviceGroup) {
+        // Radio Setup listens for the observed state whether or not it is open.
+        emit serialPortObservedState(open, path, error, native, deviceGroup);
+        if (open) {
+            m_lastSerialOpenFailure.clear();
+            return;
+        }
+        const auto failure =
+            classifySerialOpenFailure(static_cast<QSerialPort::SerialPortError>(error));
+        const QString detail = serialOpenFailureDetail(failure, path, native, deviceGroup);
+        // Once per distinct failure. loadSettings() re-runs on every serial
+        // settings change, and auto-open retries on each launch; without this a
+        // user with a permission problem would collect a dialog per attempt.
+        if (detail == m_lastSerialOpenFailure) {
+            return;
+        }
+        m_lastSerialOpenFailure = detail;
+        QMessageBox::warning(this, tr("Serial port"), detail);
+    });
     connect(m_serialPort, &SerialPortController::txInputsCancelled, this, [this, serialProducer] {
         m_radioModel.abortTxProducerInputs(serialProducer, TransmitModel::PttSource::Mox);
     });

@@ -88,6 +88,15 @@ public:
     // been built (m_automationBridgeBtn == nullptr).
     void reportAutomationBridgeStartResult(bool ok);
 
+public slots:
+    // The port's observed state from SerialPortController, by way of MainWindow
+    // (#6972). The Open button shows "Open" the moment it is clicked, because
+    // the worker thread has not tried yet; this is what corrects that to the
+    // truth — including a short reason when the open failed. No-op if the
+    // Serial page has not been built.
+    void onSerialPortObservedState(bool open, const QString& path, int error,
+                                   const QString& native, const QString& deviceGroup);
+
 signals:
     void txBandSettingsRequested();
     void serialSettingsChanged();
@@ -304,6 +313,11 @@ private:
     QHash<QString, QComboBox*> m_flexControlActionCombos;
     QHash<QString, QString> m_flexControlActionDefaults;
     QLabel* m_flexControlStatusLabel{nullptr};
+    // The serial Connection row's status, kept as members so the observed-state
+    // slot can correct what the Open button optimistically displayed (#6972).
+    QLabel*      m_serialPortStatusLabel{nullptr};
+    QPushButton* m_serialPortOpenButton{nullptr};
+    QPushButton* m_serialPortCloseButton{nullptr};
     QGroupBox* m_flexControlGroup{nullptr};
     QPushButton* m_flexControlDetectButton{nullptr};
     QPushButton* m_flexControlCloseButton{nullptr};

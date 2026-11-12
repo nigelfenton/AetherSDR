@@ -2,6 +2,11 @@
 #include "AppSettings.h"
 #include "LogManager.h"
 
+// For the device node's owning group on a failed open (#6972). group() reports
+// it on Unix and returns an empty string on Windows, which is the "no group to
+// name" case the failure policy already handles.
+#include <QFileInfo>
+
 #ifndef Q_OS_WIN
 #ifdef HAVE_SERIALPORT
 #include <QSerialPortInfo>
@@ -332,9 +337,23 @@ bool SerialPortController::open(const QString& portName, int baudRate,
     m_port.setFlowControl(QSerialPort::NoFlowControl);
 
     if (!m_port.open(QIODevice::ReadWrite)) {
-        qCWarning(lcDevices) << "SerialPortController: failed to open" << portName
-                         << m_port.errorString();
+        // The full node, not the short port name: "/dev/ttyUSB0" is what the
+        // operator has to run ls -l against, and QSerialPort::portName() gives
+        // the short form. systemLocation() lives on QSerialPortInfo, which also
+        // resolves a name Qt accepted but that is not an enumerated port, so
+        // fall back to the name as given when it reports nothing.
+        const QString located = QSerialPortInfo(m_port).systemLocation();
+        const QString devicePath = located.isEmpty() ? portName : located;
+        // Only meaningful for a permission failure, and only where the platform
+        // reports one, but reading it is cheap and keeps the decision in the
+        // policy rather than here. Empty on Windows.
+        const QString deviceGroup = QFileInfo(devicePath).group();
+        qCWarning(lcDevices) << "SerialPortController: failed to open" << devicePath
+                         << "error" << m_port.error() << m_port.errorString()
+                         << "group" << deviceGroup;
         emit errorOccurred(m_port.errorString());
+        emit portStateChanged(false, devicePath, static_cast<int>(m_port.error()),
+                              m_port.errorString(), deviceGroup);
         return false;
     }
 
@@ -372,6 +391,13 @@ bool SerialPortController::open(const QString& portName, int baudRate,
                        << "dsrFn=" << static_cast<int>(m_dsrFn)
                        << "ctsFn=" << static_cast<int>(m_ctsFn)
                        << "pollActive=" << m_pollTimer.isActive();
+    // Radio Setup shows this, not the saved request: an "Open" on screen now
+    // means the port really opened (#6972).
+    {
+        const QString located = QSerialPortInfo(m_port).systemLocation();
+        emit portStateChanged(true, located.isEmpty() ? portName : located,
+                              static_cast<int>(QSerialPort::NoError), QString(), QString());
+    }
     return true;
 #else
     Q_UNUSED(portName); Q_UNUSED(baudRate);
@@ -736,8 +762,20 @@ void SerialPortController::loadSettings()
     m_dcdActiveHigh = s.value("SerialDcdPolarity", "ActiveHigh").toString() == "ActiveHigh";
     m_paddleSwap = s.value("SerialPaddleSwap", "False").toString() == "True";
 
-    bool shouldOpen = s.value("SerialAutoOpen", "False").toString() == "True"
-                   || s.value("SerialPortOpen", "False").toString() == "True";
+    // What the operator asked for, not what the port is doing (#6972).
+    //
+    // These two settings used to be OR'd into one flag, which made Close a no-op
+    // whenever Auto-open was ticked: Close writes SerialPortOpen=False, but
+    // SerialAutoOpen=True kept the OR true and loadSettings() re-opened the port
+    // the operator had just closed.
+    //
+    // They answer different questions. SerialAutoOpen is a startup preference
+    // and applies on the FIRST load of a session; SerialPortOpen is the request
+    // the Open/Close buttons write, and is what every later load must follow.
+    const bool wantOpenNow = s.value("SerialPortOpen", "False").toString() == "True";
+    const bool autoOpen = s.value("SerialAutoOpen", "False").toString() == "True";
+    const bool shouldOpen = m_settingsLoadedOnce ? wantOpenNow : (autoOpen || wantOpenNow);
+    m_settingsLoadedOnce = true;
 
     qCDebug(lcDevices) << "SerialPortController::loadSettings:"
                        << "port=" << port
@@ -836,7 +874,12 @@ void SerialPortController::saveSettings()
     s.setValue("SerialDsrPolarity", m_dsrActiveHigh ? "ActiveHigh" : "ActiveLow");
     s.setValue("SerialDcdPolarity", m_dcdActiveHigh ? "ActiveHigh" : "ActiveLow");
     s.setValue("SerialPaddleSwap", m_paddleSwap ? "True" : "False");
-    s.setValue("SerialAutoOpen", isOpen() ? "True" : "False");
+    // SerialPortOpen is the observed state — whether the port is open now.
+    // SerialAutoOpen is the operator's PREFERENCE (open it at startup) and is
+    // owned by the checkbox in Radio Setup, so it is not written here. It used
+    // to be set from isOpen() alongside the line below, which meant a port that
+    // closed for any reason silently cleared a preference the operator had set
+    // (#6972).
     s.setValue("SerialPortOpen", isOpen() ? "True" : "False");
     s.save();
 }

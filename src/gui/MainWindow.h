@@ -358,6 +358,13 @@ public:
     void setAutomationReadOnly(bool readOnly);
 
 signals:
+    // The serial port's OBSERVED state, forwarded from SerialPortController so
+    // an open Radio Setup can show what actually happened rather than the
+    // setting it saved a moment ago (#6972). `error` is a
+    // QSerialPort::SerialPortError value as an int; see
+    // SerialPortController::portStateChanged for why it is not the enum.
+    void serialPortObservedState(bool open, const QString& path, int error,
+                                 const QString& native, const QString& deviceGroup);
     // Synchronous per-pan preflight for every radio-authoritative band-stack
     // restore. wirePanadapter() owns the pending dBm handshake state, while the
     // restore can originate in several MainWindow translation units.
@@ -1703,6 +1710,11 @@ private:
     QHash<QString, WorkspaceWindow*> m_workspaceWindows;
     QAction*             m_workspaceEditAction{nullptr};
     bool                 m_statusMessageMirrorWired{false};
+    // The last serial-open failure already shown, so a permission problem does
+    // not raise one dialog per retry: loadSettings() re-runs on every serial
+    // settings change, and auto-open tries again at each launch (#6972).
+    // Cleared on a successful open so a later failure is reported again.
+    QString              m_lastSerialOpenFailure;
     QMetaObject::Connection m_miniPanFreqConn;    // active-slice freq → mini-pan centre
     QMetaObject::Connection m_miniPanFiltConn;    // active-slice filter → mini-pan passband
     bool m_miniPanFeedWanted{false};              // applet visible → consume frames

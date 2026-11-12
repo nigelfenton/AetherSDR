@@ -3670,6 +3670,12 @@ void MainWindow::wireRadioSetupDialogSignals(RadioSetupDialog* dlg, const QStrin
             }
         }
     });
+    // The port's observed state, so the Connection row reports what the open
+    // actually did (#6972). Before this the status label read back the
+    // SerialPortOpen setting the Open button had just written, so a port that
+    // failed on a permission error still showed "Open".
+    connect(this, &MainWindow::serialPortObservedState,
+            dlg, &RadioSetupDialog::onSerialPortObservedState);
     connect(dlg, &RadioSetupDialog::txBandSettingsRequested,
             m_txBandAction, &QAction::trigger);
     // Agent automation bridge toggle (#3646). The dialog persists the click as

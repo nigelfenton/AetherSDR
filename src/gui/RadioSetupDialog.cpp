@@ -133,6 +133,7 @@
 #include <utility>
 #include "core/ThemeManager.h"
 #include "RadioSetupDialogCommon.h"
+#include "SerialOpenFailurePolicy.h"  // the short status for a failed open (#6972)
 #include "CanonIndicators.h"
 #include "CanonScrollBarStyle.h"
 #include "FramelessResizer.h"
@@ -8674,13 +8675,22 @@ QWidget* RadioSetupDialog::buildSerialTab()
         row->addWidget(statusLabel);
         row->addStretch();
 
+        // Kept so onSerialPortObservedState() can correct this row once the
+        // worker thread reports what the open actually did (#6972).
+        m_serialPortStatusLabel = statusLabel;
+        m_serialPortOpenButton = openBtn;
+        m_serialPortCloseButton = closeBtn;
+
+        // The REQUESTED state. Clicking Open cannot know the outcome yet — the
+        // port is opened on the external-controller thread — so this shows the
+        // request and onSerialPortObservedState() replaces it with the result.
         auto updatePortStatus = [openBtn, closeBtn, statusLabel]() {
             bool open = AppSettings::instance().value("SerialPortOpen", "False").toString() == "True";
             openBtn->setEnabled(!open);
             closeBtn->setEnabled(open);
             if (open) {
-                statusLabel->setText("Open");
-                setTone(statusLabel, Tone::Ok);
+                statusLabel->setText("Opening…");
+                setTone(statusLabel, Tone::Hint);
             } else {
                 statusLabel->setText("Closed");
                 setTone(statusLabel, Tone::Hint);
@@ -9541,6 +9551,41 @@ void RadioSetupDialog::setFlexControlConnectionStatus(bool connected, const QStr
         m_flexControlCloseButton->setEnabled(connected);
     if (m_flexControlDetectButton)
         m_flexControlDetectButton->setEnabled(!connected);
+}
+
+void RadioSetupDialog::onSerialPortObservedState(bool open, const QString& path, int error,
+                                                 const QString& native,
+                                                 const QString& deviceGroup)
+{
+    // The Serial page is built lazily; nothing to correct if it isn't up.
+    if (!m_serialPortStatusLabel || !m_serialPortOpenButton || !m_serialPortCloseButton) {
+        return;
+    }
+    Q_UNUSED(path);
+    Q_UNUSED(native);
+    Q_UNUSED(deviceGroup);
+
+    m_serialPortOpenButton->setEnabled(!open);
+    m_serialPortCloseButton->setEnabled(open);
+
+    if (open) {
+        m_serialPortStatusLabel->setText(tr("Open"));
+        setTone(m_serialPortStatusLabel, Tone::Ok);
+        return;
+    }
+
+    // A failed open is not "Closed": the operator asked for it to be open, and
+    // showing the same word for "you closed it" and "it would not open" is the
+    // reported bug. MainWindow has already shown the full reason in a dialog;
+    // this is the short form that stays on screen beside the button.
+    const auto failure = classifySerialOpenFailure(error);
+    if (failure == SerialOpenFailure::Other && error == kSerialNoError) {
+        m_serialPortStatusLabel->setText(tr("Closed"));
+        setTone(m_serialPortStatusLabel, Tone::Hint);
+        return;
+    }
+    m_serialPortStatusLabel->setText(serialOpenFailureStatus(failure));
+    setTone(m_serialPortStatusLabel, Tone::Error);
 }
 
 void RadioSetupDialog::reportAutomationBridgeStartResult(bool ok)
